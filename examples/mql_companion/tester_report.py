@@ -86,7 +86,17 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 from xml.etree import ElementTree
 
 import click
@@ -1367,6 +1377,365 @@ def format_for_prompt(report: TesterReport, max_lines: int = 45) -> str:
             lines.append(f"  - {warning}")
     if report.missing:
         lines.append(f"missing: {', '.join(report.missing)}")
+    return "\n".join(lines[:max_lines])
+
+
+# ---------------------------------------------------------------------------
+# Forward checks
+# ---------------------------------------------------------------------------
+
+# A forward run splits the test period in two: MT5 optimizes (or tests) on the
+# back half, then re-runs the winner on the forward half — data the search never
+# saw. It writes two files, ``<name>.htm`` and ``<name>.forward.htm``, and the
+# only honest use of the second one is to ask whether the first one survived.
+# The trap is comparing them directly: the forward half is usually a fraction of
+# the back half, so money and counts mean nothing until they are normalized per
+# day, while ratios can be read as they are.
+FORWARD_SUFFIXES: Tuple[str, ...] = (".forward.htm", ".forward.xml", ".forward.html")
+
+# Ratios and per-trade figures: the same over a month as over a year, so these
+# are compared as written.
+PERIOD_INDEPENDENT_KEYS: Tuple[str, ...] = (
+    "profit_factor",
+    "recovery_factor",
+    "sharpe_ratio",
+    "expected_payoff",
+    "profit_trades_pct",
+    "equity_drawdown_pct",
+    "equity_drawdown_relative_pct",
+    "balance_drawdown_relative_pct",
+    "avg_profit_trade",
+    "avg_loss_trade",
+    "max_conlosses",
+    "max_conprofits",
+)
+
+# Money and counts: only comparable once divided by the length of each half.
+PER_DAY_KEYS: Tuple[str, ...] = ("net_profit", "total_trades", "gross_profit")
+
+LOWER_IS_BETTER_KEYS: FrozenSet[str] = frozenset(
+    {
+        "equity_drawdown_pct",
+        "equity_drawdown_relative_pct",
+        "balance_drawdown_relative_pct",
+        "max_conlosses",
+    }
+)
+
+# The ratios whose collapse is the finding, rather than a detail.
+FORWARD_GATE_KEYS: Tuple[str, ...] = (
+    "profit_factor",
+    "recovery_factor",
+    "sharpe_ratio",
+)
+
+
+def is_forward_report(path: Path | str) -> bool:
+    """True for the ``.forward.`` half of a forward run."""
+    return ".forward." in Path(path).name.lower()
+
+
+def forward_companion(report_path: Path | str) -> List[Path]:
+    """Candidate names for the *other* half of a forward run.
+
+    Given ``Run.htm`` this returns the ``Run.forward.*`` names MT5 may have
+    written; given a forward file it returns the back-half candidates. Waiting
+    for exactly one spelling is how a caller times out on a run that succeeded —
+    the terminal picks the extension.
+    """
+    path = Path(report_path)
+    if is_forward_report(path):
+        name = re.sub(r"\.forward(?=\.[^.]+$)", "", path.name, flags=re.IGNORECASE)
+        base = path.parent / name
+        found = [base]
+        for suffix in (".htm", ".xml", ".html"):
+            candidate = base.with_suffix(suffix)
+            if candidate not in found:
+                found.append(candidate)
+        return found
+    stem = path.with_suffix("")
+    return [stem.with_suffix(suffix) for suffix in FORWARD_SUFFIXES]
+
+
+def period_days(report: TesterReport) -> Optional[float]:
+    """Length of a report's tested period in days, when it carries both dates."""
+    start = str(report.metrics.get("from_date") or "")
+    end = str(report.metrics.get("to_date") or "")
+    if not start or not end:
+        return None
+    try:
+        first = datetime.strptime(start[:10], "%Y.%m.%d")
+        second = datetime.strptime(end[:10], "%Y.%m.%d")
+    except ValueError:
+        return None
+    days = (second - first).days
+    return float(days) if days > 0 else None
+
+
+@dataclass
+class ForwardCheck:
+    """The back half against the forward half, with a verdict worth repeating.
+
+    ``verdict`` is ``holds_up``, ``degrades`` or ``inconclusive``. The point of
+    the third one is that a forward check on nine trades, or on two files with
+    no metric in common, does not get to say anything — reporting "it held up"
+    there would be worse than reporting nothing.
+    """
+
+    available: bool = False
+    verdict: str = "inconclusive"
+    back_source: str = ""
+    forward_source: str = ""
+    back_days: Optional[float] = None
+    forward_days: Optional[float] = None
+    rows: List[Dict[str, Any]] = field(default_factory=list)
+    per_day: Dict[str, Dict[str, Optional[float]]] = field(default_factory=dict)
+    reasons: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    min_trades: int = 30
+    max_degradation_pct: float = 50.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "available": self.available,
+            "verdict": self.verdict,
+            "back": self.back_source,
+            "forward": self.forward_source,
+            "back_days": self.back_days,
+            "forward_days": self.forward_days,
+            "metrics": self.rows,
+            "reasons": self.reasons,
+            "warnings": self.warnings,
+            "thresholds": {
+                "min_trades": self.min_trades,
+                "max_degradation_pct": self.max_degradation_pct,
+            },
+        }
+        if self.per_day:
+            payload["per_day"] = self.per_day
+        return payload
+
+
+def check_forward(
+    back: TesterReport,
+    forward: Optional[TesterReport] = None,
+    *,
+    min_trades: int = 30,
+    max_degradation_pct: float = 50.0,
+    keys: Optional[Sequence[str]] = None,
+) -> ForwardCheck:
+    """Compare the in-sample half of a run with its out-of-sample half.
+
+    Three kinds of finding, in the order they matter: a *sign flip* (profitable
+    in-sample, not out-of-sample) is a failure; *degradation* past
+    ``max_degradation_pct`` on the gate ratios — or on profit per day, when both
+    reports carry dates — is a failure; anything thinner than ``min_trades`` in
+    either half makes the whole comparison ``inconclusive`` instead.
+
+    Drawdown growth and low history quality are warnings, not verdicts: on their
+    own they say the forward half was harder, not that the parameters broke.
+    """
+    check = ForwardCheck(
+        back_source=back.source,
+        min_trades=min_trades,
+        max_degradation_pct=max_degradation_pct,
+    )
+    if forward is None:
+        check.reasons.append(
+            "no forward report: ForwardMode was off, or MT5 did not write the "
+            "second file — nothing here says whether the parameters hold up"
+        )
+        return check
+
+    check.available = True
+    check.forward_source = forward.source
+    check.back_days = period_days(back)
+    check.forward_days = period_days(forward)
+    degraded = False
+    inconclusive = False
+
+    # -- trade count first: every ratio below it is noise --------------------
+    for label, report in (("back", back), ("forward", forward)):
+        trades = _as_float(report.metrics.get("total_trades"))
+        if trades is None or trades >= min_trades:
+            continue
+        inconclusive = True
+        note = (
+            f"the {label} half traded {int(trades)} time(s), under the "
+            f"{min_trades} needed to read a ratio as anything but noise"
+        )
+        if label == "back":
+            note += " — the in-sample side was already too thin to optimize on"
+        check.reasons.append(note)
+
+    # -- the ratios, compared as written ------------------------------------
+    for key in keys or PERIOD_INDEPENDENT_KEYS:
+        left = _as_float(back.metrics.get(key))
+        right = _as_float(forward.metrics.get(key))
+        if left is None and right is None:
+            continue
+        row: Dict[str, Any] = {"metric": key, "back": left, "forward": right}
+        if left is not None and right is not None:
+            row["delta"] = round(right - left, 6)
+            if left:
+                worse = (
+                    (right - left) if key in LOWER_IS_BETTER_KEYS else (left - right)
+                )
+                row["degradation_pct"] = round(worse / abs(left) * 100.0, 2)
+        check.rows.append(row)
+
+    # -- sign flips: the clearest failure there is ---------------------------
+    flipped: set = set()
+    for key in ("profit_factor", "expected_payoff", "net_profit"):
+        left = _as_float(back.metrics.get(key))
+        right = _as_float(forward.metrics.get(key))
+        if left is None or right is None:
+            continue
+        floor = 1.0 if key == "profit_factor" else 0.0
+        if left > floor >= right:
+            degraded = True
+            flipped.add(key)
+            check.reasons.append(
+                f"{key.replace('_', ' ')} fell from {left} to {right}: the back "
+                "half cleared the bar and the forward half did not"
+            )
+
+    # -- degradation past the threshold --------------------------------------
+    for row in check.rows:
+        if row["metric"] not in FORWARD_GATE_KEYS or row["metric"] in flipped:
+            continue
+        pct = row.get("degradation_pct")
+        if pct is not None and pct > max_degradation_pct:
+            degraded = True
+            check.reasons.append(
+                f"{row['metric']} degraded {pct:g}% ({row['back']} -> "
+                f"{row['forward']}), over the {max_degradation_pct:g}% this check "
+                "allows"
+            )
+
+    # -- money and counts, normalized for the different period lengths -------
+    if check.back_days and check.forward_days:
+        per_day: Dict[str, Dict[str, Optional[float]]] = {}
+        for key in PER_DAY_KEYS:
+            left = _as_float(back.metrics.get(key))
+            right = _as_float(forward.metrics.get(key))
+            entry: Dict[str, Optional[float]] = {}
+            if left is not None:
+                entry["back"] = round(left / check.back_days, 4)
+            if right is not None:
+                entry["forward"] = round(right / check.forward_days, 4)
+            # Fewer trades per day is a change in activity, not a failure, so
+            # only money gets a degradation figure.
+            if (
+                key not in ("total_trades",)
+                and key not in flipped
+                and entry.get("back")
+            ):
+                entry["degradation_pct"] = round(
+                    (entry["back"] - (entry["forward"] or 0.0))
+                    / abs(entry["back"])
+                    * 100.0,
+                    2,
+                )
+                if entry["degradation_pct"] > max_degradation_pct:
+                    degraded = True
+                    check.reasons.append(
+                        f"{key.replace('_', ' ')} per day fell "
+                        f"{entry['degradation_pct']:g}% ({entry['back']} -> "
+                        f"{entry['forward']}) once the different period lengths "
+                        "are accounted for"
+                    )
+            if entry:
+                per_day[key] = entry
+        check.per_day = per_day
+        if check.forward_days > check.back_days:
+            check.warnings.append(
+                f"the forward half ({check.forward_days:.0f} days) is longer than "
+                f"the back half ({check.back_days:.0f} days); MT5 splits the other "
+                "way round by default, so check ForwardMode and ForwardDate"
+            )
+    else:
+        check.warnings.append(
+            "the two reports do not both carry from/to dates, so money and trade "
+            "counts are not normalized for period length — compare the ratios, "
+            "not the profit"
+        )
+
+    # -- context that makes the forward half harder, not wrong ---------------
+    back_dd = _as_float(back.metrics.get("equity_drawdown_relative_pct"))
+    forward_dd = _as_float(forward.metrics.get("equity_drawdown_relative_pct"))
+    if back_dd is None:
+        back_dd = _as_float(back.metrics.get("equity_drawdown_pct"))
+    if forward_dd is None:
+        forward_dd = _as_float(forward.metrics.get("equity_drawdown_pct"))
+    if back_dd and forward_dd and forward_dd > back_dd * 1.5 and forward_dd > 10:
+        check.warnings.append(
+            f"the forward drawdown ({forward_dd:g}%) is {forward_dd / back_dd:.1f}x "
+            f"the back one ({back_dd:g}%)"
+        )
+    for label, report in (("back", back), ("forward", forward)):
+        quality = _as_float(report.metrics.get("history_quality_pct"))
+        if quality is not None and quality < 90:
+            check.warnings.append(
+                f"{label} half history quality is {quality:g}% — gaps in the tick "
+                "or bar history make that curve look better than the data deserves"
+            )
+    if not check.rows:
+        inconclusive = True
+        check.reasons.append(
+            "the two reports carry no metric in common — check that both are "
+            "testing reports for the same EA"
+        )
+
+    if degraded:
+        check.verdict = "degrades"
+    elif inconclusive:
+        check.verdict = "inconclusive"
+    else:
+        check.verdict = "holds_up"
+        gated = ", ".join(FORWARD_GATE_KEYS)
+        check.reasons.append(
+            f"no sign flip and no degradation past {max_degradation_pct:g}% on "
+            f"{gated}: the parameters did not break on data the search never saw. "
+            "One split is evidence, not proof — another period, symbol or spread "
+            "can still break them, and a drawdown that grew is listed as a "
+            "warning rather than a verdict."
+        )
+    return check
+
+
+def format_forward_for_prompt(check: ForwardCheck, max_lines: int = 30) -> str:
+    """A compact, model-facing forward verdict."""
+    lines: List[str] = [f"forward check: {check.verdict}"]
+    if check.available:
+        span = ""
+        if check.back_days and check.forward_days:
+            span = f" ({check.back_days:.0f}d back / {check.forward_days:.0f}d forward)"
+        lines.append(
+            f"back: {check.back_source} | forward: {check.forward_source}{span}"
+        )
+        for row in check.rows:
+            pct = row.get("degradation_pct")
+            tail = ""
+            if pct is not None:
+                tail = f" ({pct:g}% worse)" if pct > 0 else f" ({-pct:g}% better)"
+            lines.append(f"{row['metric']}: {row['back']} -> {row['forward']}{tail}")
+        for key, entry in check.per_day.items():
+            if entry.get("back") is None or entry.get("forward") is None:
+                continue
+            pct = entry.get("degradation_pct")
+            tail = ""
+            if pct is not None:
+                # A negative degradation is an improvement; saying "worse" there
+                # would invert the finding.
+                tail = f" ({pct:g}% worse)" if pct > 0 else f" ({-pct:g}% better)"
+            lines.append(f"{key}/day: {entry['back']} -> {entry['forward']}{tail}")
+    if check.reasons:
+        lines.append("reasons:")
+        lines.extend(f"  - {reason}" for reason in check.reasons)
+    if check.warnings:
+        lines.append("warnings:")
+        lines.extend(f"  - {warning}" for warning in check.warnings)
     return "\n".join(lines[:max_lines])
 
 
@@ -3101,6 +3470,14 @@ def _file_is_stable(path: Path, poll_interval: float) -> bool:
     return first == second
 
 
+def _ini_value(ini_text: str, key: str) -> Optional[str]:
+    """One ``Key=Value`` from a ``[Tester]`` ini, or None when it is not there."""
+    match = re.search(
+        rf"^\s*{re.escape(key)}\s*=\s*(.*)$", ini_text, re.MULTILINE | re.IGNORECASE
+    )
+    return match.group(1).strip() if match else None
+
+
 def run_tester(
     *,
     terminal: Path,
@@ -3113,6 +3490,8 @@ def run_tester(
     runner: Any = None,
     parser: Optional[Callable[[Path], Any]] = None,
     process_grace: float = 5.0,
+    forward: Optional[bool] = None,
+    forward_grace: float = 120.0,
 ) -> Dict[str, Any]:
     """Write the ini, launch the terminal, wait for the report, parse it.
 
@@ -3132,10 +3511,26 @@ def run_tester(
     so without this window a perfectly good run reports ``exit_code`` as
     ``None`` and the caller cannot tell a clean exit from a terminal that is
     still up.
+
+    A forward run writes two files, and which one is "the report" matters: the
+    back half is ``<name>.htm`` and the forward half is ``<name>.forward.htm``.
+    ``forward`` says to collect both (``None``, the default, reads ``ForwardMode``
+    out of ``ini_text`` and decides from that). The outcome then carries
+    ``forward_path`` and ``forward_report`` next to ``report``, which is always
+    the back half — waiting for "the newest file" would otherwise return the
+    forward half as the result of the run. ``forward_grace`` bounds the extra
+    wait; when nothing appears the outcome says so in ``forward_note`` rather
+    than failing, because an optimization puts both halves in one table.
     """
     ini_path = report_path.with_suffix(".ini")
     ini_path.parent.mkdir(parents=True, exist_ok=True)
     ini_path.write_text(ini_text, encoding="utf-8")
+
+    if forward is None:
+        mode = _ini_value(ini_text, "ForwardMode")
+        expect_forward = bool(mode) and mode != "0"
+    else:
+        expect_forward = bool(forward)
 
     candidates = report_candidates(report_path)
     started = datetime.now(tz=timezone.utc)
@@ -3146,13 +3541,15 @@ def run_tester(
     command = tester_command(terminal, ini_path, portable=portable, wine=wine)
     logger.info("launching: %s", " ".join(command))
 
-    def fresh() -> Optional[Path]:
+    def fresh(back_half_only: bool = False) -> Optional[Path]:
         """The candidate MT5 has just (re)written, newest first."""
         produced = [
             candidate
             for candidate in candidates
             if candidate.exists() and _mtime(candidate) > before[candidate]
         ]
+        if back_half_only:
+            produced = [item for item in produced if not is_forward_report(item)]
         if not produced:
             return None
         return max(produced, key=_mtime)
@@ -3165,7 +3562,7 @@ def run_tester(
     while time.monotonic() < deadline:
         if hasattr(process, "poll"):
             exit_code = process.poll()
-        candidate = fresh()
+        candidate = fresh(back_half_only=expect_forward)
         if candidate is not None:
             # Writing a report is not atomic — an optimization with thousands of
             # passes takes seconds — and a half-written file parses as a report
@@ -3178,7 +3575,7 @@ def run_tester(
             # The terminal is gone and wrote nothing. One more beat for the
             # filesystem, then give up.
             time.sleep(min(poll_interval, 1.0))
-            if fresh() is None:
+            if fresh(back_half_only=expect_forward) is None:
                 break
         time.sleep(poll_interval)
 
@@ -3220,7 +3617,44 @@ def run_tester(
             "means the EA or its inputs were rejected, so treat these numbers as "
             "a partial run"
         )
-    return dict(run_info, report=report)
+
+    outcome: Dict[str, Any] = dict(run_info, report=report)
+    if not expect_forward:
+        return outcome
+
+    wanted = [item for item in candidates if is_forward_report(item)]
+    forward_written: Optional[Path] = None
+    forward_deadline = time.monotonic() + max(0.0, forward_grace)
+    while time.monotonic() < forward_deadline:
+        produced = [
+            item for item in wanted if item.exists() and _mtime(item) > before[item]
+        ]
+        if produced:
+            newest = max(produced, key=_mtime)
+            if _file_is_stable(newest, poll_interval):
+                forward_written = newest
+                break
+        elif poll is not None and callable(poll) and poll() is not None:
+            # The terminal is gone: no forward file is coming.
+            break
+        time.sleep(poll_interval)
+
+    if forward_written is None:
+        outcome["forward_note"] = (
+            f"ForwardMode was set but no .forward.* report appeared next to "
+            f"{written.name} within {forward_grace:.0f}s. A single test writes "
+            "one file, and an optimization puts both halves in one table as "
+            "Back Result / Forward Result columns — check which run this was "
+            "before concluding the forward half is missing."
+        )
+        return outcome
+
+    forward_report = parse_any_report(forward_written)
+    if hasattr(forward_report, "run"):
+        forward_report.run = dict(run_info, report_path=str(forward_written))
+    outcome["forward_path"] = str(forward_written)
+    outcome["forward_report"] = forward_report
+    return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -3306,6 +3740,31 @@ def _emit(payload: Any, json_out: Optional[Path], quiet: bool) -> None:
     "--no-analysis",
     is_flag=True,
     help="Rank the passes without the overfitting checks.",
+)
+# --- forward checks ----------------------------------------------------
+@click.option(
+    "--forward-report",
+    "forward_report_paths",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="The forward half of a forward run (Report.forward.htm), one per "
+    "back-half report. --run with --forward-mode collects it automatically.",
+)
+@click.option(
+    "--min-forward-trades",
+    default=30,
+    show_default=True,
+    type=int,
+    help="Below this many trades in either half the forward check reports "
+    "'inconclusive' instead of a verdict.",
+)
+@click.option(
+    "--max-degradation-pct",
+    default=50.0,
+    show_default=True,
+    type=float,
+    help="How much profit factor, recovery factor or Sharpe may fall between "
+    "the halves before the verdict is 'degrades'.",
 )
 # --- .set input files --------------------------------------------------
 @click.option(
@@ -3474,6 +3933,9 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
     rank_by: str,
     no_filter: bool,
     no_analysis: bool,
+    forward_report_paths: Tuple[Path, ...],
+    min_forward_trades: int,
+    max_degradation_pct: float,
     set_paths: Tuple[Path, ...],
     set_pass_number: Optional[int],
     write_set: Optional[Path],
@@ -3521,6 +3983,10 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
     terminal left behind, or --run to produce one first. An optimization
     report (the XML table of passes) is recognized by its contents and ranked
     instead, with the overfitting checks that a sorted table cannot show.
+
+    A forward run writes a second report for the half the search never saw;
+    --forward-report (or --run with --forward-mode) compares the two and says
+    whether the parameters held up.
     """
     logging.basicConfig(
         stream=sys.stderr,
@@ -3545,6 +4011,7 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
     )
     reports: List[TesterReport] = []
     optimizations: List[OptimizationResult] = []
+    forward_pairs: List[Tuple[TesterReport, TesterReport]] = []
 
     set_files: List[SetFile] = []
     for set_path in set_paths:
@@ -3631,6 +4098,14 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
             optimizations.append(produced)
         else:
             reports.append(produced)
+        forward_produced = outcome.get("forward_report")
+        if isinstance(produced, TesterReport) and isinstance(
+            forward_produced, TesterReport
+        ):
+            forward_pairs.append((produced, forward_produced))
+            click.echo(f"  [forward] {outcome.get('forward_path')}", err=True)
+        elif outcome.get("forward_note"):
+            click.echo(f"  [forward] {outcome['forward_note']}", err=True)
         click.echo(
             f"tester finished in {outcome['seconds']}s "
             f"(exit code {outcome['exit_code']}, report {outcome['report_path']})",
@@ -3672,6 +4147,37 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
         else:
             reports.append(parsed)
 
+    if forward_report_paths:
+        forwards: List[Any] = []
+        for forward_path in forward_report_paths:
+            try:
+                forwards.append(parse_any_report(forward_path))
+            except (FileNotFoundError, OSError) as exc:
+                click.echo(f"Error: {exc}", err=True)
+                sys.exit(1)
+        if any(isinstance(item, OptimizationResult) for item in forwards):
+            click.echo(
+                "Error: --forward-report was given an optimization table. A "
+                "forward check compares two testing reports; the forward half of "
+                "an optimization is inside the same table, as the Back Result and "
+                "Forward Result columns.",
+                err=True,
+            )
+            sys.exit(2)
+        if len(forwards) != len(reports):
+            click.echo(
+                "Error: --forward-report takes one file per back-half report "
+                f"({len(reports)} report(s) loaded, {len(forwards)} forward "
+                "file(s) given).",
+                err=True,
+            )
+            sys.exit(2)
+        forward_pairs.extend(
+            (back, item)
+            for back, item in zip(reports, forwards)
+            if isinstance(item, TesterReport)
+        )
+
     logs: List[Dict[str, Any]] = []
     for log_path in log_paths:
         try:
@@ -3709,6 +4215,25 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
                     mark = "ok  " if result.passed else "FAIL"
                     click.echo(f"  [{mark}] {result.message}", err=True)
         payload_single["reports"].append(entry)
+    if forward_pairs:
+        payload_single["forward_checks"] = []
+        for back_report, forward_report in forward_pairs:
+            check = check_forward(
+                back_report,
+                forward_report,
+                min_trades=min_forward_trades,
+                max_degradation_pct=max_degradation_pct,
+            )
+            forward_entry: Dict[str, Any] = check.to_dict()
+            if prompt:
+                forward_entry["summary"] = format_forward_for_prompt(check)
+            if not quiet:
+                click.echo(f"  [forward] verdict: {check.verdict}", err=True)
+                for reason in check.reasons:
+                    click.echo(f"  [forward] {reason}", err=True)
+                for warning in check.warnings:
+                    click.echo(f"  [warn] {warning}", err=True)
+            payload_single["forward_checks"].append(forward_entry)
     if logs:
         payload_single["logs"] = logs
     if set_files:
@@ -3792,6 +4317,7 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
 
 __all__ = [
     "DEFAULT_OPT_COLUMNS",
+    "FORWARD_GATE_KEYS",
     "HEADLINE_KEYS",
     "LABELS",
     "OPTIMIZATION_CRITERIA",
@@ -3799,8 +4325,11 @@ __all__ = [
     "OPT_COLUMNS",
     "PAIR_SPLIT",
     "PASS_FILTER_DEFAULTS",
+    "PER_DAY_KEYS",
+    "PERIOD_INDEPENDENT_KEYS",
     "RANK_KEYS",
     "TESTER_MODELS",
+    "ForwardCheck",
     "OptimizationPass",
     "OptimizationResult",
     "PassFilter",
@@ -3812,6 +4341,7 @@ __all__ = [
     "build_label_lookup",
     "build_tester_ini",
     "candidate_data_dirs",
+    "check_forward",
     "check_thresholds",
     "compare_reports",
     "decode_report_bytes",
@@ -3823,8 +4353,11 @@ __all__ = [
     "find_terminal",
     "find_tester_logs",
     "format_for_prompt",
+    "format_forward_for_prompt",
     "format_optimization_for_prompt",
+    "forward_companion",
     "html_cells",
+    "is_forward_report",
     "is_optimization_text",
     "needs_wine",
     "normalize_number",
@@ -3838,6 +4371,7 @@ __all__ = [
     "parse_set_text",
     "parse_text_report",
     "parse_xml_report",
+    "period_days",
     "rank_passes",
     "report_candidates",
     "run_tester",
