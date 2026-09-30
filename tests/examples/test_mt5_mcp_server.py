@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import pytest
 
@@ -262,6 +262,7 @@ class TestToolTable:
             "mt5_tester_report",
             "mt5_tester_compare",
             "mt5_tester_optimization",
+            "mt5_tester_forward_check",
         ]
         assert "mt5_order_send" not in names
         assert "mt5_tester_run" not in names
@@ -1389,3 +1390,228 @@ class TestTesterOptimizationTool:
         )
         assert out["isError"] is True
         assert ".set file not found" in out["text"]
+
+
+# ---------------------------------------------------------------------------
+# Forward checks over MCP
+# ---------------------------------------------------------------------------
+
+
+# A year in sample, then a quarter out of sample with the same edge weakened.
+# 12 000 over 364 days is 32.967/day; 2 500 over 89 days is 28.0899/day, which
+# is 14.79% down — the number a raw profit comparison would call an 79% collapse.
+FWD_BACK_HTML = """<html><body><table>
+<tr><td>Expert Advisor</td><td>MyEA.ex5</td><td>Symbol</td><td>EURUSD</td></tr>
+<tr><td>Period</td><td>2022.01.01 - 2022.12.31</td></tr>
+<tr><td>History Quality</td><td>100%</td></tr>
+<tr><td>Total Net Profit</td><td>12 000.00</td>
+<td>Gross Profit</td><td>27 000.00</td></tr>
+<tr><td>Profit Factor</td><td>1.80</td><td>Recovery Factor</td><td>2.50</td></tr>
+<tr><td>Sharpe Ratio</td><td>1.40</td><td>Expected Payoff</td><td>4.20</td></tr>
+<tr><td>Total Trades</td><td>480</td>
+<td>Equity Drawdown Maximal</td><td>4 800.00 (12.00%)</td></tr>
+</table></body></html>"""
+
+FWD_HOLD_HTML = """<html><body><table>
+<tr><td>Expert Advisor</td><td>MyEA.ex5</td><td>Symbol</td><td>EURUSD</td></tr>
+<tr><td>Period</td><td>2023.01.01 - 2023.03.31</td></tr>
+<tr><td>History Quality</td><td>100%</td></tr>
+<tr><td>Total Net Profit</td><td>2 500.00</td>
+<td>Gross Profit</td><td>9 400.00</td></tr>
+<tr><td>Profit Factor</td><td>1.36</td><td>Recovery Factor</td><td>1.90</td></tr>
+<tr><td>Sharpe Ratio</td><td>1.00</td><td>Expected Payoff</td><td>3.10</td></tr>
+<tr><td>Total Trades</td><td>110</td>
+<td>Equity Drawdown Maximal</td><td>1 300.00 (21.00%)</td></tr>
+</table></body></html>"""
+
+# The same run, out of sample, with the edge gone.
+FWD_FAIL_HTML = """<html><body><table>
+<tr><td>Expert Advisor</td><td>MyEA.ex5</td><td>Symbol</td><td>EURUSD</td></tr>
+<tr><td>Period</td><td>2023.01.01 - 2023.03.31</td></tr>
+<tr><td>History Quality</td><td>88%</td></tr>
+<tr><td>Total Net Profit</td><td>-400.00</td><td>Profit Factor</td><td>0.82</td></tr>
+<tr><td>Sharpe Ratio</td><td>-0.20</td><td>Expected Payoff</td><td>-1.10</td></tr>
+<tr><td>Total Trades</td><td>140</td>
+<td>Equity Drawdown Maximal</td><td>2 000.00 (18.00%)</td></tr>
+</table></body></html>"""
+
+
+def _write_forward_run(tmp_path: Path, forward_html: str) -> Tuple[Path, Path]:
+    """A back half and the .forward.htm MT5 writes beside it, forward newest."""
+    back = tmp_path / "Run.htm"
+    forward = tmp_path / "Run.forward.htm"
+    back.write_text(FWD_BACK_HTML, encoding="utf-8")
+    forward.write_text(forward_html, encoding="utf-8")
+    stamp = back.stat().st_mtime
+    os.utime(back, (stamp, stamp))
+    os.utime(forward, (stamp + 10, stamp + 10))
+    return back, forward
+
+
+@pytest.fixture()
+def forward_run(tmp_path: Path) -> Tuple[Path, Path]:
+    """A forward run whose out-of-sample half still works."""
+    return _write_forward_run(tmp_path, FWD_HOLD_HTML)
+
+
+@pytest.fixture()
+def forward_run_failed(tmp_path: Path) -> Tuple[Path, Path]:
+    """A forward run whose out-of-sample half lost the edge."""
+    return _write_forward_run(tmp_path, FWD_FAIL_HTML)
+
+
+class TestTesterForwardCheckTool:
+    def test_it_is_registered_read_only(self, bridge: ModuleType, server: Any) -> None:
+        response = server.handle(bridge.MCPRequest(method="tools/list", id=1))
+        tools = {t["name"]: t for t in response.result["tools"]}
+        assert "mt5_tester_forward_check" in tools
+        assert tools["mt5_tester_forward_check"]["annotations"]["readOnlyHint"] is True
+
+    def test_it_finds_the_forward_half_beside_the_back_one(
+        self, server: Any, forward_run: Tuple[Path, Path]
+    ) -> None:
+        back, forward = forward_run
+        payload = _payload(server, "mt5_tester_forward_check", path=str(back))
+        check = payload["forward_check"]
+        assert check["available"] is True
+        assert check["verdict"] == "holds_up"
+        assert check["per_day"]["net_profit"]["degradation_pct"] == 14.79
+        assert payload["back"]["found_by"] == "explicit"
+        assert payload["back"]["source"] == str(back)
+        assert payload["forward"]["found_by"] == "companion"
+        assert payload["forward"]["source"] == str(forward)
+
+    def test_an_explicit_forward_path_is_used(
+        self, server: Any, forward_run: Tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        back, _forward = forward_run
+        other = tmp_path / "elsewhere" / "Other.forward.htm"
+        other.parent.mkdir()
+        other.write_text(FWD_FAIL_HTML, encoding="utf-8")
+        payload = _payload(
+            server, "mt5_tester_forward_check", path=str(back), forward_path=str(other)
+        )
+        assert payload["forward"]["found_by"] == "explicit"
+        assert payload["forward_check"]["verdict"] == "degrades"
+
+    def test_a_flipped_forward_half_degrades(
+        self, server: Any, forward_run_failed: Tuple[Path, Path]
+    ) -> None:
+        back, _forward = forward_run_failed
+        payload = _payload(server, "mt5_tester_forward_check", path=str(back))
+        check = payload["forward_check"]
+        assert check["verdict"] == "degrades"
+        assert any("profit factor fell from 1.8 to 0.82" in r for r in check["reasons"])
+        assert any("history quality is 88%" in w for w in check["warnings"])
+        assert "forward check: degrades" in payload["summary"]
+
+    def test_passing_the_forward_half_swaps_to_its_back(
+        self, server: Any, forward_run: Tuple[Path, Path]
+    ) -> None:
+        """The newest file after a forward run is usually the forward one."""
+        back, forward = forward_run
+        payload = _payload(server, "mt5_tester_forward_check", path=str(forward))
+        assert payload["back"]["source"] == str(back)
+        assert payload["forward"]["source"] == str(forward)
+        assert "is the forward half" in payload["note"]
+
+    def test_it_finds_the_newest_forward_run(
+        self, bridge: ModuleType, stub: Any, forward_run: Tuple[Path, Path]
+    ) -> None:
+        back, _forward = forward_run
+        srv = bridge.build_server(stub, tester_dirs=[str(back.parent)])
+        payload = _payload(srv, "mt5_tester_forward_check")
+        assert payload["back"]["found_by"] == "newest"
+        assert payload["back"]["source"] == str(back)
+        assert payload["forward_check"]["verdict"] == "holds_up"
+
+    def test_the_thresholds_reach_the_check(
+        self, server: Any, forward_run: Tuple[Path, Path]
+    ) -> None:
+        back, _forward = forward_run
+        thin = _payload(
+            server, "mt5_tester_forward_check", path=str(back), min_trades=500
+        )
+        assert thin["forward_check"]["verdict"] == "inconclusive"
+        assert thin["forward_check"]["thresholds"]["min_trades"] == 500
+        strict = _payload(
+            server,
+            "mt5_tester_forward_check",
+            path=str(back),
+            max_degradation_pct=10.0,
+        )
+        assert strict["forward_check"]["verdict"] == "degrades"
+
+    def test_the_summary_is_there_unless_asked_otherwise(
+        self, server: Any, forward_run: Tuple[Path, Path]
+    ) -> None:
+        back, _forward = forward_run
+        payload = _payload(server, "mt5_tester_forward_check", path=str(back))
+        assert payload["summary"].startswith("forward check: holds_up")
+        quiet = _payload(
+            server, "mt5_tester_forward_check", path=str(back), summary=False
+        )
+        assert "summary" not in quiet
+
+    def test_a_forward_report_from_another_run_is_not_paired(
+        self, server: Any, tester_report: Path, forward_run: Tuple[Path, Path]
+    ) -> None:
+        """A companion is matched by name, never by "some forward file nearby".
+
+        Pairing this report with a forward half from a different run would
+        compare two unrelated tests and report the result as a forward check —
+        a wrong answer that looks like a right one.
+        """
+        _back, forward = forward_run
+        payload = _payload(server, "mt5_tester_forward_check", path=str(tester_report))
+        assert payload["forward_check"]["available"] is False
+        assert payload["forward_check"]["verdict"] == "inconclusive"
+        assert "forward" not in payload
+        assert str(forward) not in json.dumps(payload)
+
+    def test_no_forward_file_says_so_instead_of_guessing(
+        self, server: Any, tester_report: Path
+    ) -> None:
+        payload = _payload(server, "mt5_tester_forward_check", path=str(tester_report))
+        check = payload["forward_check"]
+        assert check["available"] is False
+        assert check["verdict"] == "inconclusive"
+        assert "no forward report" in check["reasons"][0]
+        assert "forward" not in payload
+        assert "ForwardMode off" in payload["note"]
+
+    def test_an_optimization_table_as_the_forward_half_is_refused(
+        self, server: Any, forward_run: Tuple[Path, Path], optimization_report: Path
+    ) -> None:
+        back, _forward = forward_run
+        out = _call(
+            server,
+            "mt5_tester_forward_check",
+            path=str(back),
+            forward_path=str(optimization_report),
+        )
+        assert out["isError"] is True
+        assert "mt5_tester_optimization" in out["text"]
+
+    def test_a_missing_file_explains_itself(
+        self, server: Any, forward_run: Tuple[Path, Path]
+    ) -> None:
+        back, _forward = forward_run
+        out = _call(
+            server,
+            "mt5_tester_forward_check",
+            path=str(back),
+            forward_path="/nope/Run.forward.htm",
+        )
+        assert out["isError"] is True
+        assert "forward report not found" in out["text"]
+        missing = _call(server, "mt5_tester_forward_check", path="/nope/missing.htm")
+        assert missing["isError"] is True
+
+    def test_it_writes_nothing(
+        self, server: Any, forward_run: Tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        back, _forward = forward_run
+        before = sorted(item.name for item in tmp_path.iterdir())
+        _payload(server, "mt5_tester_forward_check", path=str(back))
+        assert sorted(item.name for item in tmp_path.iterdir()) == before

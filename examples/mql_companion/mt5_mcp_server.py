@@ -13,9 +13,9 @@ Everything lives in this one file on purpose: the usual deployment is copying
 it to the Windows machine that runs the terminal, so it must not drag a package
 tree along. The one exception is optional: when ``tester_report.py`` sits next
 to this file, the bridge also serves ``mt5_tester_report``,
-``mt5_tester_compare`` and ``mt5_tester_optimization`` so an agent can read
-Strategy Tester results as numbers
-instead of guessing from a chart. Copy the whole ``mql_companion`` folder for
+``mt5_tester_compare``, ``mt5_tester_optimization`` and
+``mt5_tester_forward_check`` so an agent can read Strategy Tester results as
+numbers instead of guessing from a chart. Copy the whole ``mql_companion`` folder for
 that; copy this file alone and the tools simply are not registered.
 
 It speaks the MCP JSON-RPC protocol that ``openjarvis.mcp.client`` expects, so
@@ -2194,6 +2194,105 @@ def build_tools(
         )
         return payload
 
+    def h_tester_forward_check(
+        path: Optional[str] = None,
+        forward_path: Optional[str] = None,
+        search_dir: Optional[str] = None,
+        min_trades: int = 30,
+        max_degradation_pct: float = 50.0,
+        summary: bool = True,
+    ) -> Dict[str, Any]:
+        """Back half against forward half: did the edge survive new data?
+
+        ``forward_path`` is optional — the ``.forward.`` file MT5 writes next to
+        the back half is found *by name*. Only that name is trusted: a forward
+        report from some other run in the same folder is not this run's
+        out-of-sample half, and pairing them would compare two unrelated tests
+        and call the result a forward check. The newest file after a forward run
+        is often the forward half itself, so a resolved ``.forward.`` path is
+        swapped with its back companion rather than compared against nothing.
+        """
+        back_path, found_by = _resolve_report(path, search_dir)
+        forward_file: Optional[Path] = None
+        forward_by = ""
+        swapped = False
+
+        if forward_path:
+            candidate = Path(str(forward_path)).expanduser()
+            if not candidate.is_file():
+                raise Mt5Error(
+                    f"forward report not found: {candidate}. A forward run "
+                    "writes it beside the back half as <name>.forward.htm (or "
+                    ".forward.xml)."
+                )
+            forward_file, forward_by = candidate, "explicit"
+        else:
+            if tester_lib.is_forward_report(back_path):
+                for companion in tester_lib.forward_companion(back_path):
+                    if companion.is_file():
+                        back_path, forward_file = companion, back_path
+                        forward_by, swapped = "companion", True
+                        break
+            else:
+                for companion in tester_lib.forward_companion(back_path):
+                    if companion.is_file():
+                        forward_file, forward_by = companion, "companion"
+                        break
+        try:
+            back = tester_lib.parse_report(back_path)
+        except (OSError, ValueError) as exc:
+            raise Mt5Error(f"could not parse {back_path}: {exc}") from exc
+
+        forward: Any = None
+        if forward_file is not None:
+            try:
+                parsed = tester_lib.parse_any_report(forward_file)
+            except (OSError, ValueError) as exc:
+                raise Mt5Error(f"could not parse {forward_file}: {exc}") from exc
+            if isinstance(parsed, tester_lib.OptimizationResult):
+                raise Mt5Error(
+                    f"{forward_file} is a table of optimization passes, not a "
+                    "testing report. The forward half of an optimization is "
+                    "inside the same table, as the Back Result and Forward "
+                    "Result columns — use mt5_tester_optimization for it."
+                )
+            forward = parsed
+
+        check = tester_lib.check_forward(
+            back,
+            forward,
+            min_trades=int(min_trades),
+            max_degradation_pct=float(max_degradation_pct),
+        )
+        payload: Dict[str, Any] = {
+            "back": _report_payload(back, None, False, found_by),
+            "forward_check": check.to_dict(),
+        }
+        if forward is not None:
+            payload["forward"] = _report_payload(forward, None, False, forward_by)
+        if summary:
+            payload["summary"] = tester_lib.format_forward_for_prompt(check)
+        notes = [
+            "A forward check compares the half the search saw with the half it "
+            "did not. `verdict` is holds_up, degrades or inconclusive — "
+            "inconclusive means the comparison cannot support a verdict (too few "
+            "trades in a half, or no metric in common), not that nothing "
+            "changed. Money and trade counts are normalized per day, because the "
+            "forward half is usually a fraction of the back half."
+        ]
+        if swapped:
+            notes.append(
+                f"the file found ({forward_file}) is the forward half, so its "
+                f"back companion ({back_path}) was used as the in-sample side."
+            )
+        if forward is None:
+            notes.append(
+                "no forward report was found: the run had ForwardMode off, or "
+                "MT5 put both halves in one optimization table."
+            )
+        payload["note"] = " ".join(notes)
+        return payload
+
     def h_tester_run(
         expert: str,
         symbol: str = "",
@@ -2212,6 +2311,10 @@ def build_tools(
         timeout: float = 1800.0,
         portable: bool = False,
         summary: bool = True,
+        forward_mode: Optional[int] = None,
+        forward_date: str = "",
+        min_forward_trades: int = 30,
+        max_degradation_pct: float = 50.0,
     ) -> Dict[str, Any]:
         terminal_exe = tester_lib.find_terminal(terminal_path)
         if terminal_exe is None:
@@ -2241,6 +2344,8 @@ def build_tools(
             optimization=int(optimization) if optimization is not None else None,
             expert_parameters=str(expert_parameters or ""),
             report=str(target.with_suffix("")),
+            forward_mode=(int(forward_mode) if forward_mode is not None else None),
+            forward_date=str(forward_date or ""),
         )
         wait_for = max(60.0, float(timeout or 1800.0))
         try:
@@ -2254,7 +2359,24 @@ def build_tools(
         except (TimeoutError, FileNotFoundError, OSError) as exc:
             raise Mt5Error(f"tester run failed: {exc}") from exc
         report = outcome.pop("report")
+        # The forward half arrives as a parsed report object; turn it into a
+        # payload (and a verdict) before it reaches the JSON serializer.
+        forward_report = outcome.pop("forward_report", None)
+        forward_note = outcome.pop("forward_note", "")
         payload = _report_payload(report, None, bool(summary), "run")
+        if forward_report is not None and hasattr(forward_report, "to_dict"):
+            check = tester_lib.check_forward(
+                report,
+                forward_report,
+                min_trades=int(min_forward_trades),
+                max_degradation_pct=float(max_degradation_pct),
+            )
+            payload["forward"] = _report_payload(forward_report, None, False, "run")
+            payload["forward_check"] = check.to_dict()
+            if summary:
+                payload["forward_summary"] = tester_lib.format_forward_for_prompt(check)
+        elif forward_note:
+            payload["forward_note"] = forward_note
         payload["run"] = dict(outcome, **report.run)
         payload["ini"] = ini_text
         return payload
@@ -2421,6 +2543,58 @@ def build_tools(
                 read_only=True,
             )
         )
+        defs.append(
+            ToolDef(
+                name="mt5_tester_forward_check",
+                description=(
+                    "Compare a Strategy Tester report with the forward half of "
+                    "its run — the period the optimization never saw — and say "
+                    "whether the parameters survived it. Finds the "
+                    "<name>.forward.htm file MT5 writes beside the back half (or "
+                    "pass forward_path); a forward report from another run is "
+                    "never paired, so a missing companion comes back as "
+                    "`available: false` rather than as a comparison of two "
+                    "unrelated tests. Returns a verdict of holds_up, degrades "
+                    "or inconclusive with the reasons: a profit factor crossing "
+                    "1, profit crossing zero, decay past max_degradation_pct on "
+                    "profit factor / recovery factor / Sharpe, or too few trades "
+                    "in either half to read a ratio at all. Money and counts are "
+                    "normalized per day, since the forward half is usually a "
+                    "fraction of the back one; drawdown growth and low history "
+                    "quality come back as warnings, not verdicts. Omit `path` "
+                    "for the newest report found. Read-only: it writes nothing."
+                ),
+                schema=_schema(
+                    {
+                        "path": _s(
+                            "Back-half report (.htm/.xml). Omit for the newest "
+                            "one found; a forward file passed here is swapped "
+                            "for its back companion."
+                        ),
+                        "forward_path": _s(
+                            "Forward-half report (<name>.forward.htm). Omit to "
+                            "look for it beside the back half."
+                        ),
+                        "search_dir": _s(
+                            "Folder to search when `path` is omitted; overrides "
+                            "the server's --tester-dir."
+                        ),
+                        "min_trades": _int(
+                            "Trades a half needs before the verdict is not "
+                            "'inconclusive' (default 30)."
+                        ),
+                        "max_degradation_pct": _num(
+                            "How far the gate ratios may fall before the verdict "
+                            "is 'degrades' (default 50)."
+                        ),
+                        "summary": _bool("Include a compact text summary."),
+                    }
+                ),
+                handler=h_tester_forward_check,
+                timeout=60.0,
+                read_only=True,
+            )
+        )
         if allow_tester_run:
             defs.append(
                 ToolDef(
@@ -2472,6 +2646,24 @@ def build_tools(
                                 "Seconds to wait for the report (default 1800)."
                             ),
                             "portable": _bool("Pass /portable to the terminal."),
+                            "forward_mode": _int(
+                                "Split the period and re-run on the far side: 0 "
+                                "off, otherwise the terminal's Forward setting. "
+                                "The run then returns `forward` and "
+                                "`forward_check` with a holds_up / degrades / "
+                                "inconclusive verdict."
+                            ),
+                            "forward_date": _s(
+                                "Custom split date, YYYY.MM.DD (with forward_mode)."
+                            ),
+                            "min_forward_trades": _int(
+                                "Trades a half needs for a forward verdict "
+                                "(default 30)."
+                            ),
+                            "max_degradation_pct": _num(
+                                "Allowed decay in the gate ratios before the "
+                                "forward verdict is 'degrades' (default 50)."
+                            ),
                             "summary": _bool("Include a compact text summary."),
                         },
                         ["expert"],

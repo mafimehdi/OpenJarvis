@@ -78,6 +78,9 @@ enabled = [
     # Optimization passes: ranked, filtered, and checked for the overfitting
     # a sorted table hides. Also returns the .set that reproduces one pass.
     "mt5_tester_optimization",
+    # Forward checks: the back half against the half the search never saw, with
+    # a holds_up / degrades / inconclusive verdict instead of a sorted table.
+    "mt5_tester_forward_check",
     # "mt5_order_send",         # only exists with --allow-trading; demo only
     # "mt5_tester_run",         # only exists with --allow-tester; it launches
     #                           # the terminal and closes it when done
@@ -98,9 +101,9 @@ enabled = [
 # enabled = true
 # servers = '[{"name": "mt5", "command": "python", "args": ["examples/mql_companion/mt5_mcp_server.py", "--tester-dir", "C:/Users/you/AppData/Roaming/MetaQuotes/Terminal/<hash>/Tester"]}]'
 #
-# --tester-dir tells mt5_tester_report and mt5_tester_optimization where reports
-# land; without it the bridge searches the terminal's data folders and the
-# working directory. Add
+# --tester-dir tells mt5_tester_report, mt5_tester_optimization and
+# mt5_tester_forward_check where reports land; without it the bridge searches the
+# terminal's data folders and the working directory. Add
 # "--allow-tester" to also register mt5_tester_run, which launches the terminal
 # to run a backtest — only on a machine dedicated to testing.
 #

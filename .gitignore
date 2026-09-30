@@ -131,3 +131,8 @@ learning.db
 minion_logs/
 *.oj-debug.json
 oj-debug.*.json
+
+# Strategy Tester artifacts. `tester_report.py --run` writes its report into the
+# current directory when no --out-report is given, and MT5 names the forward half
+# of a run <name>.forward.htm — easy to commit by accident from a repo-root run.
+/TesterReport.*
