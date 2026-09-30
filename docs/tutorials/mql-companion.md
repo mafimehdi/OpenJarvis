@@ -598,6 +598,111 @@ python examples/mql_companion/mt5_mcp_server.py --stub --tester-dir ~/mt5-report
 `.set` text for a chosen pass — text, not a written file, so the read-only
 bridge stays read-only and the agent decides whether to save it.
 
+## Going Further: Forward Checks
+
+The optimization section ended on an uncomfortable note: every pass in that table
+was measured on the history that produced it, so the table cannot tell a real edge
+from a good fit. There is exactly one way to ask the terminal a different question,
+and it is a setting in the same dialog — **Forward**.
+
+MT5 splits the period in two. It optimizes on the back half, takes the winner, and
+re-runs it on the forward half: dates the search never saw. Then it writes a second
+report beside the first — `MACD.htm` and `MACD.forward.htm` — and the pair is worth
+more than either file alone.
+
+```bash
+python examples/mql_companion/tester_report.py --run \
+    --expert "Examples/MACD/MACD Sample" --symbol EURUSD --period H1 \
+    --from-date 2022.01.01 --to-date 2023.03.31 \
+    --model 4 --forward-mode 1 --out-report reports/MACD.xml
+```
+
+That launches the terminal, so it takes minutes and closes MT5 when it finishes —
+the same caveat as any `--run`. Reading the result afterwards needs no terminal at
+all:
+
+```bash
+python examples/mql_companion/tester_report.py --report reports/MACD.htm --prompt
+```
+
+The `.forward.htm` beside it is found by name, and the output gains a block like
+this one (real output, wrapped to fit the page):
+
+```text
+forward check: holds_up
+back: reports/MACD.htm | forward: reports/MACD.forward.htm (364d back / 89d forward)
+profit_factor: 1.8 -> 1.36 (24.44% worse)
+recovery_factor: 2.5 -> 1.9 (24% worse)
+sharpe_ratio: 1.4 -> 1.0 (28.57% worse)
+net_profit/day: 32.967 -> 28.0899 (14.79% worse)
+total_trades/day: 1.3187 -> 1.236
+reasons:
+  - no sign flip and no degradation past 50% on profit_factor, recovery_factor,
+    sharpe_ratio: the parameters did not break on data the search never saw. One
+    split is evidence, not proof — another period, symbol or spread can still
+    break them, and a drawdown that grew is listed as a warning rather than a
+    verdict.
+warnings:
+  - the forward drawdown (21%) is 1.8x the back one (12%)
+```
+
+### The trap this avoids
+
+Look at `net_profit/day` and not at the profit. The back half made 12 000 over a
+year; the forward half made 2 500 over a quarter. Compared raw, that reads as a
+79% collapse and the EA looks broken. Compared per day — 32.97 against 28.09 — it
+is 14.79% down, which is a weaker edge, not a dead one. The forward half is almost
+always shorter, so money and trade counts are divided by each half's length in days
+(taken from the report's own from/to dates), while ratios and per-trade figures are
+compared as written: a profit factor means the same thing over a quarter as over a
+year. When a report carries no dates, the check says so and compares ratios only,
+rather than inventing a normalization.
+
+### Reading the verdict
+
+There are three, and the third is the point.
+
+- **`holds_up`** — nothing crossed a line and no gate ratio (profit factor,
+  recovery factor, Sharpe) or profit-per-day fell more than
+  `--max-degradation-pct` (50 by default).
+- **`degrades`** — the profit factor crossed 1, profit or expected payoff crossed
+  zero, or a gate ratio fell past that threshold. The reasons name the metric and
+  both values, so the verdict is checkable.
+- **`inconclusive`** — a half traded fewer than `--min-forward-trades` (30), the two
+  files share no metric, or there is no forward file at all. A forward check on nine
+  trades cannot support "it held up"; saying so is the useful answer. A `degrades`
+  verdict still wins over a thin sample, because thinness is not an alibi for a loss.
+
+Drawdown growth, history quality under 90% in either half, and a forward half longer
+than the back one are **warnings**, not verdicts: they say the forward half was
+harder, not that the parameters broke.
+
+### Over MCP
+
+`mt5_tester_forward_check` does the same job for an agent, read-only. It finds the
+companion *by name* only: a forward report from another run in the same folder is
+not this run's out-of-sample half, and pairing them would compare two unrelated
+tests and report the result as a forward check. If you pass the forward file as
+`path` — easy to do, since it is usually the newest file in the folder — it swaps in
+the back companion and says so in the note.
+
+```json
+{"name": "mt5_tester_forward_check",
+ "arguments": {"path": "C:/reports/MACD.htm", "max_degradation_pct": 35}}
+```
+
+`mt5_tester_run` takes `forward_mode` and `forward_date` too, so a single call can
+run the split and come back with the verdict — with the same warning as ever: it
+launches the terminal and closes it when it finishes.
+
+### What the verdict is not
+
+`holds_up` means one thing: on this split, with this symbol, spread and history, the
+parameters did not break on data the search never saw. It is not a forecast, and one
+split is one sample — the next quarter can still break them. Quote the split you
+tested, and treat the verdict as a gate that was passed rather than a promise about
+live trading.
+
 ## See Also
 
 - [The example's README](https://github.com/mafimehdi/OpenJarvis/blob/main/examples/mql_companion/README.md) — command reference for `metaeditor.py`, `compile_loop.py`, `tester_report.py`, and `install_skill.py`

@@ -141,6 +141,50 @@ thousand is a genetic run; over ~100k is a plan for next month, and the reader
 says so. Cutting the grid is not cheating — an input that never changes the
 outcome is an input to delete from the EA.
 
+## Forward runs
+
+`ForwardMode` splits the period: MT5 optimizes on the back half, then re-runs the
+winner on the forward half — dates the search never saw. It is the only setting in
+the tester that can answer "did this survive new data?" rather than "how well did
+this fit?".
+
+| Run | Files written |
+|---|---|
+| Single test with `ForwardMode` | `<name>.htm` and `<name>.forward.htm` |
+| Optimization with `ForwardMode` | one `<name>.xml` whose table gains `Back Result` and `Forward Result` columns |
+
+The forward file is matched **by name**: a `.forward.` report from another run in
+the same folder is not this run's out-of-sample half, and pairing them would
+compare two unrelated tests. `mt5_tester_forward_check` therefore returns
+`available: false` when the companion is missing rather than reaching for the
+newest forward file it can find. Passing the forward half as the report swaps in
+its back companion, since the forward file is usually the newer of the two.
+
+### Verdicts
+
+| Verdict | Earned by |
+|---|---|
+| `holds_up` | No sign flip, and no gate ratio (profit factor, recovery factor, Sharpe) or profit-per-day down more than `max_degradation_pct` (50 by default) |
+| `degrades` | Profit factor crossed 1, profit or expected payoff crossed zero, or a gate ratio fell past that threshold |
+| `inconclusive` | A half traded fewer than `min_trades` (30), the two reports share no metric, or there is no forward file |
+
+A `degrades` verdict wins over a thin sample — thinness is not an alibi for a loss
+— but a thin sample on its own produces `inconclusive`, never `holds_up`.
+
+### Normalization
+
+The forward half is usually a fraction of the back half, so:
+
+| Metric kind | Compared how |
+|---|---|
+| Ratios and per-trade figures (profit factor, recovery factor, Sharpe, expected payoff, win rate, drawdown %) | As written — they mean the same thing over a quarter as over a year |
+| Money and counts (net profit, gross profit, trades) | Divided by each half's length in days, from the report's own from/to dates |
+| Anything, when a report has no dates | Ratios only, with a warning that the money is not normalized |
+
+Drawdown growth, history quality under 90%, and a forward half longer than the back
+one are warnings rather than verdicts: they say the forward half was harder, not
+that the parameters broke.
+
 ## The workflow that does not lie to the user
 
 1. Optimize (`Optimization=1/2` + `OptimizationCriterion`), with a `.set` in

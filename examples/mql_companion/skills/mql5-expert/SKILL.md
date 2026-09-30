@@ -210,6 +210,25 @@ performance:
   the in-sample order survived out-of-sample data; a rho near zero means
   picking the best pass was close to picking at random.
 
+When the run had a forward half of its own (`ForwardMode`), MT5 writes a second
+report next to the first (`<name>.forward.htm`) and `mt5_tester_forward_check`
+turns the pair into a verdict: `holds_up`, `degrades` or `inconclusive`. Run it
+before recommending any pass from a forward run, and quote the verdict with the
+reasons it gives:
+
+- **`inconclusive` is an answer.** A half with fewer than ~30 trades, a missing
+  forward file, or two reports with no metric in common cannot support a verdict.
+  Say the sample is too thin; never upgrade that to "it held up".
+- **The money is normalized per day**, because the forward half is usually a
+  fraction of the back one. Never compare raw profit across the halves — a
+  quarter earning a third of a year's profit is a weaker edge, not a dead one.
+- **`degrades` names the metric and both values.** Repeat them. A profit factor
+  that crossed 1 out of sample is the finding; the pass that produced it is not a
+  candidate any more.
+- **`holds_up` is not a forecast.** It says the parameters did not break on this
+  split. Say which split, and that another period, symbol or spread can still
+  break them.
+
 `rank_by` accepts `result`, `profit`, `payoff`, `profit_factor`,
 `recovery_factor`, `sharpe`, `drawdown`, `trades`, `custom`, `back_result` and
 `forward_result`. The junk filters are the platform's own (no trades, no profit,
@@ -272,6 +291,9 @@ as an agent, build the JSON properly (escaped backslashes are fine there).
   search, measured once by one criterion: quote it with its pass number, its
   trade count and the warnings from `analysis`, and say whether it was
   re-tested on its own. If it was not, that is the next step, not a footnote.
+- Never turn a forward verdict into a promise. `holds_up` means the parameters
+  survived one split of one period; quote it with the dates it covers, and quote
+  `inconclusive` as the answer it is rather than as a missing result.
 - Warn about money. Any change to lot sizing, stops, or recovery logic gets an
   explicit note that it must be validated on a demo account first.
 

@@ -280,6 +280,52 @@ read-only tools stay read-only and the agent decides whether to save it. The
 `mql-assistant` preset lists the new tool, since a non-empty `[tools] enabled` list
 filters MCP tools by name.
 
+**Forward checks — the only question the tester can answer about new data.**
+Every number in an optimization report was measured on the history that produced it,
+so the table cannot tell a real edge from a good fit. `ForwardMode` is the setting
+that asks a different question: MT5 splits the period, optimizes on the back half,
+then re-runs the winner on the forward half — dates the search never saw — and writes
+a second report beside the first (`<name>.forward.htm`; an optimization instead gains
+`Back Result` and `Forward Result` columns in the same table). `check_forward()` reads
+the pair and returns one of three verdicts.
+
+`inconclusive` is the reason there are three. A forward check on nine trades cannot
+support "it held up", so a thin half (under `min_trades`, 30), a missing companion and
+two reports with no metric in common all say so instead of producing a number to quote;
+a *degrades* verdict still wins over a thin sample, because thinness is not an alibi for
+a loss. `degrades` is earned by a sign flip — profit factor crossing 1, or profit and
+expected payoff crossing zero — or by decay past `max_degradation_pct` (50) on the gate
+ratios. A metric that flipped is not then also reported as "degraded 54%": one failure,
+one reason.
+
+The comparison is normalized, because the trap here is arithmetic rather than
+statistics: the forward half is usually a fraction of the back half, so 2 500 over a
+quarter against 12 000 over a year reads as a 79% collapse when it is 14.79% down per
+day. Ratios and per-trade figures mean the same thing over either span and are compared
+as written; money and trade counts are divided by each half's length in days, taken from
+the report's own from/to dates (`period_days()`), and when a report carries no dates the
+check warns and compares ratios only rather than inventing a normalization. Drawdown
+growth, history quality under 90% and a forward half *longer* than the back one are
+warnings, not verdicts — they say the forward half was harder, not that the parameters
+broke.
+
+`run_tester()` collects both halves: `forward=None` reads `ForwardMode` out of the ini
+text, `report` is now always the back half (waiting for "the newest file" returned the
+forward one), and a `ForwardMode` run that produces a single file explains itself in
+`forward_note` rather than timing out. The CLI gained `--forward-report`, `--min-
+forward-trades` and `--max-degradation-pct`, and the bridge gained a read-only
+`mt5_tester_forward_check` plus forward parameters on `mt5_tester_run`.
+
+The MCP tool matches the companion **by name only**, which a first version did not: it
+also accepted "the newest forward file under the search roots", and that happily paired
+a report in a temp folder with an unrelated `TesterReport.forward.htm` sitting in the
+repository root — two different runs reported as one forward check. A wrong answer that
+looks like a right one is worse than `available: false`, so the fallback is gone and a
+test pins that a forward report from another run is never paired. That same stray file
+turned out to be committed: a CLI run had written the default report name into the repo
+root and `git add -A` swept it in. Both files are removed and `.gitignore` now covers
+`/TesterReport.*`.
+
 ### Fixed
 
 **Apple Silicon energy was never measured, only modelled.**

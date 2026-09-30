@@ -18,7 +18,7 @@ the only authority that matters: the compiler.
 |---|---|
 | `metaeditor.py` | MetaEditor CLI driver — discovery (Windows / Wine / env), UTF-16 log decode, diagnostic parsing, artifact detection |
 | `mt5_mcp_server.py` | MCP bridge to a running MetaTrader 5 terminal — live quotes, contract specs, margin/profit maths, tester reports, and gated demo order execution |
-| `tester_report.py` | Strategy Tester reader — parses `.htm`/`.xml` reports into metrics, checks CI thresholds, compares runs, ranks optimization passes with overfitting checks, reads and writes `.set` input files, and can launch a headless backtest or optimization |
+| `tester_report.py` | Strategy Tester reader — parses `.htm`/`.xml` reports into metrics, checks CI thresholds, compares runs, ranks optimization passes with overfitting checks, reads and writes `.set` input files, checks a forward run against its out-of-sample half, and can launch a headless backtest or optimization |
 | `compile_loop.py` | compile → fix → recompile loop built on the OpenJarvis SDK |
 | `install_skill.py` | validate and install `skills/mql5-expert` into `~/.openjarvis/skills` |
 | `skills/mql5-expert/` | `SKILL.md` instructions, a 2-step `skill.toml` pipeline, 3 reference docs, an EA template |
@@ -209,6 +209,8 @@ and filling modes and starts reading them:
 | `mt5_calc` | Margin required (and per lot) plus profit at a close price — the ground truth for lot-sizing code |
 | `mt5_tester_report` | A Strategy Tester report as numbers: profit factor, all four drawdowns, win rate, streaks, history quality — with optional thresholds that turn it into a pass/fail gate |
 | `mt5_tester_compare` | Two or more reports side by side, with deltas and a winner per criterion |
+| `mt5_tester_optimization` | An optimization table ranked and filtered, with the overfitting checks and the `.set` text that reproduces one pass |
+| `mt5_tester_forward_check` | A report against the forward half of its run: `holds_up`, `degrades` or `inconclusive`, with the money normalized per day |
 | `mt5_order_send` | A market order. **Not registered unless you pass `--allow-trading`, and demo accounts only** |
 | `mt5_tester_run` | Launches the terminal to run a backtest and returns its report. **Not registered unless you pass `--allow-tester`** |
 
@@ -345,9 +347,9 @@ tick or bar history, and the results look better than the data deserves. The
 parser warns about it, and `--min-history-quality-pct` makes CI care.
 
 The agent reaches the same data through the bridge — `mt5_tester_report`,
-`mt5_tester_compare`, `mt5_tester_optimization` and (with `--allow-tester`)
-`mt5_tester_run` — which is what makes "is my EA profitable?" a question it can
-answer with numbers:
+`mt5_tester_compare`, `mt5_tester_optimization`, `mt5_tester_forward_check` and
+(with `--allow-tester`) `mt5_tester_run` — which is what makes "is my EA
+profitable?" a question it can answer with numbers:
 
 ```bash
 python examples/mql_companion/mt5_mcp_server.py --stub --tester-dir ~/mt5-reports \
@@ -477,6 +479,120 @@ stays read-only.
 > **A pass is not a backtest.** The optimizer measured it once, on one slice of
 > history, with the criterion you asked for. Everything above exists to stop
 > that single row from being reported as if it were a result.
+
+## Forward Checks: Did the Winner Survive New Data?
+
+Every number in an optimization report was measured on the history that produced
+it. A *forward* run is the one check in this workflow that can say something
+different: MT5 splits the period, optimizes on the back half, then re-runs the
+winner on the forward half — data the search never saw. It writes that second
+half next to the first:
+
+| Run | Files |
+|---|---|
+| Single test with `ForwardMode` | `<name>.htm` and `<name>.forward.htm` |
+| Optimization with `ForwardMode` | one `<name>.xml`, whose table gains `Back Result` and `Forward Result` columns |
+
+```bash
+# Produce both halves (this launches the terminal; see the --run notes above).
+python examples/mql_companion/tester_report.py --run \
+    --expert "Examples/MACD/MACD Sample" --symbol EURUSD --period H1 \
+    --from-date 2022.01.01 --to-date 2023.03.31 \
+    --model 4 --forward-mode 1 --out-report reports/MACD.xml
+
+# Read them back: the .forward.htm beside a report is found by name.
+python examples/mql_companion/tester_report.py --report reports/MACD.htm --prompt
+
+# Or name both halves yourself, e.g. files copied off another machine.
+python examples/mql_companion/tester_report.py \
+    --report reports/MACD.htm --forward-report reports/MACD.forward.htm --prompt
+```
+
+### The three verdicts
+
+| Verdict | Earned by |
+|---|---|
+| `holds_up` | No sign flip, and no gate ratio (profit factor, recovery factor, Sharpe) or profit-per-day down more than `--max-degradation-pct` (50 by default) |
+| `degrades` | Profit factor crossed 1, profit or expected payoff crossed zero, or a gate ratio fell past that threshold |
+| `inconclusive` | A half traded fewer than `--min-forward-trades` (30), the two files share no metric, or there is no forward file at all |
+
+`inconclusive` is the reason there are three verdicts and not two. A forward
+check on nine trades cannot support "it held up", and reporting that would be
+worse than reporting nothing — so a thin sample, a missing file and a pair of
+reports with nothing in common all say so plainly instead of producing a number
+to quote. A *degrades* verdict wins over a thin sample, though: thinness is not
+an alibi for a loss.
+
+### Why the money is divided by days
+
+The forward half is usually a fraction of the back half, so raw profit is not a
+comparison — 2 500 over a quarter against 12 000 over a year is 14.79% down per
+day, not 79% down. Ratios and per-trade figures (profit factor, recovery factor,
+Sharpe, expected payoff, win rate, drawdown percentages) mean the same thing over
+either span and are compared as written; money and trade counts are divided by
+each half's length in days, taken from the report's own from/to dates. When a
+report carries no dates the check says so and compares ratios only, rather than
+inventing a normalization.
+
+### Warnings that are not verdicts
+
+A drawdown that grew, history quality under 90% in either half, and a forward
+half *longer* than the back one (MT5 splits the other way round by default, so
+check `ForwardMode` and `ForwardDate`) come back as warnings. On their own they
+say the forward half was harder, not that the parameters broke.
+
+### What it looks like
+
+Real output from the reader on a year in sample and a quarter out:
+
+```text
+forward check: degrades
+back: reports/MACD.htm | forward: reports/MACD.forward.htm (364d back / 89d forward)
+profit_factor: 1.8 -> 0.82 (54.44% worse)
+recovery_factor: 2.5 -> 0.2 (92% worse)
+sharpe_ratio: 1.4 -> -0.2 (114.29% worse)
+expected_payoff: 4.2 -> -1.1 (126.19% worse)
+equity_drawdown_pct: 12.0 -> 18.0 (50% worse)
+net_profit/day: 32.967 -> -4.4944
+total_trades/day: 1.3187 -> 1.573
+reasons:
+  - profit factor fell from 1.8 to 0.82: the back half cleared the bar and the
+    forward half did not
+  - expected payoff fell from 4.2 to -1.1: the back half cleared the bar and the
+    forward half did not
+  - net profit fell from 12000.0 to -400.0: the back half cleared the bar and the
+    forward half did not
+  - recovery_factor degraded 92% (2.5 -> 0.2), over the 50% this check allows
+warnings:
+  - forward half history quality is 88% — gaps in the tick or bar history make
+    that curve look better than the data deserves
+```
+
+(The metric lines are wrapped here to fit the page; the tool prints one line per
+metric. `net_profit/day` carries no percentage because the sign flip already
+reported it — one failure, one reason.)
+
+### Over MCP
+
+`mt5_tester_forward_check` is the read-only version: pass the back half (or
+nothing, for the newest report) and it finds the `.forward.` companion *by name*.
+Only by name — a forward report from some other run in the same folder is not
+this run's out-of-sample half, and pairing them would compare two unrelated
+tests and call the result a forward check. Passing the forward half as `path`
+swaps in its back companion, since the newest file after a forward run is usually
+the forward one. An optimization table passed as the forward half is refused with
+a pointer to the `Back Result` / `Forward Result` columns.
+
+`mt5_tester_run` takes `forward_mode`, `forward_date`, `min_forward_trades` and
+`max_degradation_pct`, so one call can run the split and return the verdict.
+
+### What `holds_up` does not mean
+
+It means one thing: on this split, with this symbol, spread and history, the
+parameters did not break on data the search never saw. It is not a live-trading
+forecast, and a single split is one sample — the same EA can fail on the next
+quarter. Say the split you tested and treat the verdict as a gate that was
+passed, not as a promise.
 
 ## Extending
 
