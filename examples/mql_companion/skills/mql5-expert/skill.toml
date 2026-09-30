@@ -1,0 +1,27 @@
+[skill]
+name = "mql5-expert"
+version = "0.1.0"
+description = "Review a MetaTrader Expert Advisor source file against the MQL5 correctness checklist and return the file plus the checklist findings"
+author = "openjarvis"
+tags = ["coding", "mql5", "mql4", "metatrader", "expert-advisor", "trading"]
+required_capabilities = ["file:read", "code:execute"]
+
+# NOTE ON THIS PIPELINE
+# SkillExecutor renders `arguments_template` with raw {key} substitution and the
+# result is parsed as JSON. Interpolating a whole source file into a template
+# therefore produces invalid JSON (newlines and quotes), so the steps below only
+# interpolate JSON-safe scalars. The deep work happens on the instruction path:
+# when an agent invokes this skill, SKILL.md is injected into its context and the
+# agent composes its own tool calls (file_read / apply_patch / shell_exec).
+# For the compile stage use examples/mql_companion/compile_loop.py, which drives
+# MetaEditor directly instead of going through the template renderer.
+
+[[skill.steps]]
+tool_name = "file_read"
+arguments_template = '{"path": "{file_path}"}'
+output_key = "source_code"
+
+[[skill.steps]]
+tool_name = "think"
+arguments_template = '{"thought": "Reviewing the MQL source at {file_path}. Checklist: (1) event handlers present and signatures exact - int OnInit(), void OnDeinit(const int reason), void OnTick(); (2) no MQL4-isms - bare Ask, Bid, Point, Digits, OrderSend with the MQL4 argument list, OrderClose, OrderModify, OrderSelect, AccountBalance, MarketInfo, Time[] or Close[] series arrays; (3) indicator handles created once in OnInit, compared against INVALID_HANDLE, released in OnDeinit, and every CopyBuffer return value checked for less than zero; (4) ArraySetAsSeries called before indexing a copied buffer as latest bar; (5) positions filtered by both symbol and magic number, iterated backwards when modified; (6) stop loss and take profit always set, normalized to SYMBOL_DIGITS, and at least SYMBOL_TRADE_STOPS_LEVEL away from price; (7) lot size normalized to SYMBOL_VOLUME_STEP and clamped to SYMBOL_VOLUME_MIN and SYMBOL_VOLUME_MAX, computed from ACCOUNT_EQUITY and SYMBOL_TRADE_TICK_VALUE rather than hardcoded; (8) spread filter and new-bar guard so a bar strategy does not trade every tick; (9) no Sleep in an EA, no unbounded retry loop, no hardcoded broker symbol suffix; (10) every implicit numeric conversion made explicit. Report each finding as file(line,col) severity message with a concrete fix, then a one-line verdict. Focus requested by the user: {focus}"}'
+output_key = "review"

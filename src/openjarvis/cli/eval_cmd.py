@@ -56,6 +56,10 @@ KNOWN_BENCHMARKS = {
         "category": "use-case",
         "description": "Function-level code generation",
     },
+    "mql-bench": {
+        "category": "coding",
+        "description": "MQL5 Expert Advisor code generation (structural)",
+    },
 }
 
 KNOWN_BACKENDS = {

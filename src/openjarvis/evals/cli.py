@@ -137,6 +137,10 @@ BENCHMARKS = {
         "category": "coding",
         "description": "LiveCodeBench competitive programming",
     },
+    "mql-bench": {
+        "category": "coding",
+        "description": "MQL5 Expert Advisor code generation (structural)",
+    },
     "liveresearch": {
         "category": "agentic",
         "description": "DeepResearchBench report generation (alias: deepresearch)",
@@ -379,6 +383,10 @@ def _build_dataset(benchmark: str, subset: str | None = None):
         from openjarvis.evals.datasets.workarena import WorkArenaDataset
 
         return WorkArenaDataset()
+    elif benchmark == "mql-bench":
+        from openjarvis.evals.datasets.mql_bench import MQLBenchDataset
+
+        return MQLBenchDataset()
     elif benchmark == "coding_assistant":
         from openjarvis.evals.datasets.coding_assistant import CodingAssistantDataset
 
@@ -544,6 +552,10 @@ def _build_scorer(benchmark: str, judge_backend, judge_model: str):
         from openjarvis.evals.scorers.workarena_scorer import WorkArenaScorer
 
         return WorkArenaScorer(judge_backend, judge_model)
+    elif benchmark == "mql-bench":
+        from openjarvis.evals.scorers.mql_bench import MQLBenchScorer
+
+        return MQLBenchScorer(judge_backend, judge_model)
     elif benchmark == "coding_assistant":
         from openjarvis.evals.scorers.coding_assistant import CodingAssistantScorer
 
