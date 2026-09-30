@@ -3485,3 +3485,21 @@ class TestForwardCliTableHalf:
         payload = json.loads(result.stdout)
         assert "forward_checks" not in payload
         assert payload["reports"][0]["metrics"]["profit_factor"] == 1.55
+
+
+class TestCheckForwardWithoutTradeCounts:
+    def test_a_missing_trade_count_warns_instead_of_deciding(self) -> None:
+        """The thin-sample rule fires only on a value the file contains."""
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8),
+            _report("forward", profit_factor=1.6),
+        )
+        assert check.verdict == "holds_up"
+        assert any("thin-sample rule" in warning for warning in check.warnings)
+
+    def test_one_trade_count_is_enough_to_apply_the_rule(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, total_trades=480),
+            _report("forward", profit_factor=1.6),
+        )
+        assert not any("thin-sample rule" in w for w in check.warnings)

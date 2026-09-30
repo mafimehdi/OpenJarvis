@@ -2065,9 +2065,16 @@ def build_tools(
     ) -> Dict[str, Any]:
         report_path, found_by = _resolve_report(path, search_dir)
         try:
-            report = tester_lib.parse_report(report_path)
+            parsed = tester_lib.parse_any_report(report_path)
         except (OSError, ValueError) as exc:
             raise Mt5Error(f"could not parse {report_path}: {exc}") from exc
+        if isinstance(parsed, tester_lib.OptimizationResult):
+            raise Mt5Error(
+                f"{report_path} is a table of optimization passes, not a single "
+                "test: it has rows to rank, not metrics to gate. Use "
+                "mt5_tester_optimization for it."
+            )
+        report = parsed
         rules = _threshold_rules(
             min_profit_factor=min_profit_factor,
             min_recovery_factor=min_recovery_factor,
@@ -2104,9 +2111,16 @@ def build_tools(
             if not candidate.is_file():
                 raise Mt5Error(f"report not found: {candidate}")
             try:
-                reports.append(tester_lib.parse_report(candidate))
+                parsed = tester_lib.parse_any_report(candidate)
             except (OSError, ValueError) as exc:
                 raise Mt5Error(f"could not parse {candidate}: {exc}") from exc
+            if isinstance(parsed, tester_lib.OptimizationResult):
+                raise Mt5Error(
+                    f"{candidate} is a table of optimization passes, not a single "
+                    "test, so it has no metrics to compare. Rank it with "
+                    "mt5_tester_optimization, or compare two single-test reports."
+                )
+            reports.append(parsed)
         comparison = tester_lib.compare_reports(
             reports, [str(key) for key in keys] if keys else None
         )

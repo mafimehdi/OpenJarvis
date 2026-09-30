@@ -1798,3 +1798,33 @@ class TestForwardCheckRefusals:
         assert payload["forward_check"]["available"] is False
         assert "is itself the forward half" in payload["note"]
         assert "ForwardMode off" not in payload["note"]
+
+
+class TestReadersRefuseAnOptimizationTable:
+    """An empty metric set looks like an answer; steering does not."""
+
+    def test_the_report_tool_steers_to_the_optimization_tool(
+        self, server: Any, optimization_report: Path
+    ) -> None:
+        out = _call(server, "mt5_tester_report", path=str(optimization_report))
+        assert out["isError"] is True
+        assert "table of optimization passes" in out["text"]
+        assert "mt5_tester_optimization" in out["text"]
+
+    def test_the_compare_tool_refuses_a_table_among_the_reports(
+        self, server: Any, tester_report: Path, optimization_report: Path
+    ) -> None:
+        out = _call(
+            server,
+            "mt5_tester_compare",
+            paths=[str(tester_report), str(optimization_report)],
+        )
+        assert out["isError"] is True
+        assert "no metrics to compare" in out["text"]
+        assert "mt5_tester_optimization" in out["text"]
+
+    def test_a_testing_report_still_reads_normally(
+        self, server: Any, tester_report: Path
+    ) -> None:
+        payload = _payload(server, "mt5_tester_report", path=str(tester_report))
+        assert payload["metrics"]["profit_factor"] == 1.38

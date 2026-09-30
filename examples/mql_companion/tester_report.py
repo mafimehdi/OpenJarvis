@@ -1568,6 +1568,18 @@ def check_forward(
             note += " — the in-sample side was already too thin to optimize on"
         check.reasons.append(note)
 
+    if not any(
+        _as_float(report.metrics.get("total_trades")) is not None
+        for report in (back, forward)
+    ):
+        # Consistent with the optimization checks: a rule fires only on a value
+        # the file contains, so an absent trade count warns rather than decides.
+        check.warnings.append(
+            "neither half states a trade count, so the thin-sample rule could "
+            "not be applied — a ratio over an unknown number of trades is weaker "
+            "evidence than it looks"
+        )
+
     # -- the ratios, compared as written ------------------------------------
     for key in keys or PERIOD_INDEPENDENT_KEYS:
         left = _as_float(back.metrics.get(key))
