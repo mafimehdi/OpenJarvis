@@ -1078,6 +1078,24 @@ HTM
 </Table>
 OPT
     exit 0;;
+  forward)
+    # A forward run writes the back half and a second file with a .forward
+    # suffix. Which one the runner returns as "the report" is the whole point.
+    cat > "${report}.htm" <<HTM
+<html><body><table>
+<tr><td>Total Net Profit</td><td>1 850.25</td></tr>
+<tr><td>Profit Factor</td><td>1.55</td></tr>
+<tr><td>Total Trades</td><td>310</td></tr>
+</table></body></html>
+HTM
+    cat > "${report}.forward.htm" <<FWD
+<html><body><table>
+<tr><td>Total Net Profit</td><td>-220.00</td></tr>
+<tr><td>Profit Factor</td><td>0.91</td></tr>
+<tr><td>Total Trades</td><td>88</td></tr>
+</table></body></html>
+FWD
+    exit 0;;
   noreport) exit 0;;
   fail) exit 7;;
   failafter) exit 7;;
@@ -2704,3 +2722,710 @@ class TestRunnerProcessGrace:
         )
         assert outcome["exit_code"] is None
         assert time.monotonic() - started < 5
+
+
+# ---------------------------------------------------------------------------
+# Forward checks: back half against the half the search never saw
+# ---------------------------------------------------------------------------
+
+
+FORWARD_BACK_HTML = """<html><body><table>
+<tr><td>Period</td><td>2022.01.01 - 2022.12.31</td></tr>
+<tr><td>History Quality</td><td>100%</td></tr>
+<tr><td>Total Net Profit</td><td>12 000.00</td></tr>
+<tr><td>Gross Profit</td><td>27 000.00</td></tr>
+<tr><td>Profit Factor</td><td>1.80</td></tr>
+<tr><td>Recovery Factor</td><td>2.50</td></tr>
+<tr><td>Sharpe Ratio</td><td>1.40</td></tr>
+<tr><td>Expected Payoff</td><td>4.20</td></tr>
+<tr><td>Total Trades</td><td>480</td></tr>
+<tr><td>Equity Drawdown Maximal</td><td>4 800.00 (12.00%)</td></tr>
+</table></body></html>"""
+
+# The same edge, weaker: nothing flips, nothing degrades past 50%.
+FORWARD_MILD_HTML = """<html><body><table>
+<tr><td>Period</td><td>2023.01.01 - 2023.03.31</td></tr>
+<tr><td>History Quality</td><td>100%</td></tr>
+<tr><td>Total Net Profit</td><td>2 500.00</td></tr>
+<tr><td>Gross Profit</td><td>9 400.00</td></tr>
+<tr><td>Profit Factor</td><td>1.36</td></tr>
+<tr><td>Recovery Factor</td><td>1.90</td></tr>
+<tr><td>Sharpe Ratio</td><td>1.00</td></tr>
+<tr><td>Expected Payoff</td><td>3.10</td></tr>
+<tr><td>Total Trades</td><td>110</td></tr>
+<tr><td>Equity Drawdown Maximal</td><td>1 300.00 (21.00%)</td></tr>
+</table></body></html>"""
+
+# The edge is gone: profit factor under 1 and a loss.
+FORWARD_FLIP_HTML = """<html><body><table>
+<tr><td>Period</td><td>2023.01.01 - 2023.03.31</td></tr>
+<tr><td>History Quality</td><td>88%</td></tr>
+<tr><td>Total Net Profit</td><td>-400.00</td></tr>
+<tr><td>Profit Factor</td><td>0.82</td></tr>
+<tr><td>Recovery Factor</td><td>0.20</td></tr>
+<tr><td>Sharpe Ratio</td><td>-0.20</td></tr>
+<tr><td>Expected Payoff</td><td>-1.10</td></tr>
+<tr><td>Total Trades</td><td>140</td></tr>
+<tr><td>Equity Drawdown Maximal</td><td>2 000.00 (18.00%)</td></tr>
+</table></body></html>"""
+
+
+@pytest.fixture()
+def forward_files(tmp_path: Path) -> Tuple[Path, Path, Path]:
+    """Back half, a forward half that holds, and one that does not."""
+    back = tmp_path / "Run.htm"
+    mild = tmp_path / "Run.mild.forward.htm"
+    flip = tmp_path / "Run.flip.forward.htm"
+    back.write_text(FORWARD_BACK_HTML, encoding="utf-8")
+    mild.write_text(FORWARD_MILD_HTML, encoding="utf-8")
+    flip.write_text(FORWARD_FLIP_HTML, encoding="utf-8")
+    return back, mild, flip
+
+
+def _report(source: str, **metrics: Any) -> Any:
+    return tr.TesterReport(source=source, metrics=dict(metrics))
+
+
+class TestForwardCompanion:
+    def test_it_names_the_forward_half_of_a_testing_report(self) -> None:
+        names = [path.name for path in tr.forward_companion(Path("Run.htm"))]
+        assert names == ["Run.forward.htm", "Run.forward.xml", "Run.forward.html"]
+
+    def test_it_names_the_back_half_of_a_forward_report(self) -> None:
+        names = [path.name for path in tr.forward_companion(Path("Run.forward.htm"))]
+        assert names[0] == "Run.htm"
+        assert "Run.xml" in names
+
+    def test_it_keeps_the_directory(self, tmp_path: Path) -> None:
+        found = tr.forward_companion(tmp_path / "out" / "Run.xml")
+        assert all(path.parent == tmp_path / "out" for path in found)
+
+    def test_a_forward_file_is_recognized_by_name(self) -> None:
+        assert tr.is_forward_report("reports/Run.forward.xml")
+        assert not tr.is_forward_report("reports/Run.xml")
+        assert not tr.is_forward_report("reports/Run.htm")
+
+
+class TestPeriodDays:
+    def test_it_reads_the_span_from_both_dates(self) -> None:
+        report = _report("r", from_date="2022.01.01", to_date="2022.12.31")
+        assert tr.period_days(report) == 364.0
+
+    def test_it_returns_none_when_a_date_is_missing(self) -> None:
+        assert tr.period_days(_report("r", from_date="2022.01.01")) is None
+
+    def test_it_returns_none_when_the_dates_are_not_dates(self) -> None:
+        report = _report("r", from_date="last year", to_date="yesterday")
+        assert tr.period_days(report) is None
+
+    def test_a_single_day_is_none_rather_than_zero(self) -> None:
+        """Zero days would divide by zero in the per-day figures."""
+        report = _report("r", from_date="2022.01.01", to_date="2022.01.01")
+        assert tr.period_days(report) is None
+
+
+class TestCheckForward:
+    def test_no_forward_report_is_inconclusive_and_says_why(self) -> None:
+        check = tr.check_forward(_report("back", profit_factor=1.8))
+        assert check.available is False
+        assert check.verdict == "inconclusive"
+        assert "no forward report" in check.reasons[0]
+
+    def test_a_surviving_edge_holds_up(self) -> None:
+        back = _report(
+            "back",
+            from_date="2022.01.01",
+            to_date="2022.12.31",
+            net_profit=12000.0,
+            profit_factor=1.8,
+            sharpe_ratio=1.4,
+            total_trades=480,
+        )
+        forward = _report(
+            "forward",
+            from_date="2023.01.01",
+            to_date="2023.03.31",
+            net_profit=2500.0,
+            profit_factor=1.36,
+            sharpe_ratio=1.0,
+            total_trades=110,
+        )
+        check = tr.check_forward(back, forward)
+        assert check.verdict == "holds_up"
+        assert check.available is True
+        assert check.back_days == 364.0
+        assert check.forward_days == 89.0
+        assert "evidence, not proof" in check.reasons[-1]
+
+    def test_a_profit_factor_that_crosses_one_degrades(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, total_trades=480),
+            _report("forward", profit_factor=0.82, total_trades=140),
+        )
+        assert check.verdict == "degrades"
+        assert any("profit factor fell from 1.8 to 0.82" in r for r in check.reasons)
+
+    def test_a_net_profit_that_crosses_zero_degrades(self) -> None:
+        check = tr.check_forward(
+            _report("back", net_profit=5000.0, profit_factor=1.5, total_trades=200),
+            _report("forward", net_profit=-300.0, profit_factor=1.2, total_trades=90),
+        )
+        assert check.verdict == "degrades"
+        assert any("net profit fell" in reason for reason in check.reasons)
+
+    def test_a_flip_is_not_also_reported_as_degradation(self) -> None:
+        """One failure, one reason: the flip already says the ratio collapsed."""
+        check = tr.check_forward(
+            _report(
+                "back",
+                from_date="2022.01.01",
+                to_date="2022.12.31",
+                net_profit=12000.0,
+                profit_factor=1.8,
+                total_trades=480,
+            ),
+            _report(
+                "forward",
+                from_date="2023.01.01",
+                to_date="2023.03.31",
+                net_profit=-400.0,
+                profit_factor=0.82,
+                total_trades=140,
+            ),
+        )
+        profit_factor_reasons = [
+            reason for reason in check.reasons if "profit_factor" in reason
+        ]
+        assert not profit_factor_reasons, "the flip covers it"
+        assert len([r for r in check.reasons if "profit factor fell" in r]) == 1
+        net_profit_reasons = [r for r in check.reasons if "net profit" in r]
+        assert len(net_profit_reasons) == 1
+
+    def test_degradation_past_the_threshold_degrades(self) -> None:
+        """60% off the profit factor, still above 1 — no flip, just decay."""
+        check = tr.check_forward(
+            _report("back", profit_factor=3.0, sharpe_ratio=2.0, total_trades=400),
+            _report("forward", profit_factor=1.2, sharpe_ratio=1.9, total_trades=200),
+        )
+        assert check.verdict == "degrades"
+        assert any("profit_factor degraded 60" in reason for reason in check.reasons)
+
+    def test_degradation_under_the_threshold_holds_up(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=2.0, sharpe_ratio=2.0, total_trades=400),
+            _report("forward", profit_factor=1.2, sharpe_ratio=1.9, total_trades=200),
+        )
+        assert check.verdict == "holds_up"
+        assert check.rows[0]["degradation_pct"] == 40.0
+
+    def test_the_degradation_threshold_is_the_callers(self) -> None:
+        back = _report("back", profit_factor=2.0, total_trades=400)
+        forward = _report("forward", profit_factor=1.2, total_trades=200)
+        assert tr.check_forward(back, forward, max_degradation_pct=90).verdict == (
+            "holds_up"
+        )
+        assert tr.check_forward(back, forward, max_degradation_pct=10).verdict == (
+            "degrades"
+        )
+
+    def test_a_thin_forward_half_is_inconclusive(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, total_trades=480),
+            _report("forward", profit_factor=2.4, total_trades=9),
+        )
+        assert check.verdict == "inconclusive"
+        assert "forward half traded 9 time(s)" in check.reasons[0]
+
+    def test_a_thin_back_half_is_inconclusive_too(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, total_trades=12),
+            _report("forward", profit_factor=1.7, total_trades=140),
+        )
+        assert check.verdict == "inconclusive"
+        assert any("too thin to optimize on" in reason for reason in check.reasons)
+
+    def test_min_trades_is_the_callers(self) -> None:
+        back = _report("back", profit_factor=1.8, total_trades=20)
+        forward = _report("forward", profit_factor=1.7, total_trades=18)
+        assert tr.check_forward(back, forward, min_trades=10).verdict == "holds_up"
+        assert tr.check_forward(back, forward, min_trades=30).verdict == (
+            "inconclusive"
+        )
+
+    def test_a_degrades_verdict_wins_over_a_thin_sample(self) -> None:
+        """A sign flip is a finding even on few trades; thinness is not an alibi."""
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, total_trades=480),
+            _report("forward", profit_factor=0.7, total_trades=12),
+        )
+        assert check.verdict == "degrades"
+
+    def test_money_is_normalized_per_day(self) -> None:
+        """A quarter earning 2 500 is not worse than a year earning 12 000."""
+        check = tr.check_forward(
+            _report(
+                "back",
+                from_date="2022.01.01",
+                to_date="2022.12.31",
+                net_profit=12000.0,
+                total_trades=480,
+                profit_factor=1.8,
+            ),
+            _report(
+                "forward",
+                from_date="2023.01.01",
+                to_date="2023.03.31",
+                net_profit=2500.0,
+                total_trades=110,
+                profit_factor=1.36,
+            ),
+        )
+        assert check.per_day["net_profit"]["back"] == 32.967
+        assert check.per_day["net_profit"]["forward"] == 28.0899
+        assert check.per_day["net_profit"]["degradation_pct"] == 14.79
+        # Trade counts are activity, not a verdict: no degradation figure.
+        assert "degradation_pct" not in check.per_day["total_trades"]
+
+    def test_per_day_degradation_can_be_the_finding(self) -> None:
+        check = tr.check_forward(
+            _report(
+                "back",
+                from_date="2022.01.01",
+                to_date="2022.12.31",
+                net_profit=12000.0,
+                profit_factor=1.8,
+                total_trades=480,
+            ),
+            _report(
+                "forward",
+                from_date="2023.01.01",
+                to_date="2023.03.31",
+                net_profit=400.0,
+                profit_factor=1.36,
+                total_trades=110,
+            ),
+        )
+        assert check.verdict == "degrades"
+        assert any("net profit per day fell" in reason for reason in check.reasons)
+
+    def test_without_dates_it_warns_instead_of_comparing_raw_profit(self) -> None:
+        check = tr.check_forward(
+            _report("back", net_profit=12000.0, profit_factor=1.8, total_trades=480),
+            _report("forward", net_profit=2500.0, profit_factor=1.36, total_trades=110),
+        )
+        assert check.per_day == {}
+        assert any("not normalized" in warning for warning in check.warnings)
+        assert check.verdict == "holds_up"
+
+    def test_a_forward_half_longer_than_the_back_warns(self) -> None:
+        check = tr.check_forward(
+            _report(
+                "back",
+                from_date="2023.01.01",
+                to_date="2023.02.01",
+                profit_factor=1.8,
+                total_trades=480,
+            ),
+            _report(
+                "forward",
+                from_date="2022.01.01",
+                to_date="2022.12.31",
+                profit_factor=1.7,
+                total_trades=1100,
+            ),
+        )
+        assert any("longer than the back half" in w for w in check.warnings)
+
+    def test_low_history_quality_in_either_half_warns(self) -> None:
+        check = tr.check_forward(
+            _report(
+                "back", history_quality_pct=100.0, profit_factor=1.8, total_trades=480
+            ),
+            _report(
+                "forward", history_quality_pct=71.0, profit_factor=1.7, total_trades=110
+            ),
+        )
+        assert any("forward half history quality is 71%" in w for w in check.warnings)
+
+    def test_a_growing_drawdown_warns_without_changing_the_verdict(self) -> None:
+        check = tr.check_forward(
+            _report(
+                "back",
+                equity_drawdown_relative_pct=12.0,
+                profit_factor=1.8,
+                total_trades=480,
+            ),
+            _report(
+                "forward",
+                equity_drawdown_relative_pct=21.0,
+                profit_factor=1.7,
+                total_trades=110,
+            ),
+        )
+        assert any("1.8x the back one" in warning for warning in check.warnings)
+        assert check.verdict == "holds_up"
+
+    def test_an_improving_ratio_reads_as_a_negative_degradation(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.4, total_trades=480),
+            _report("forward", profit_factor=1.9, total_trades=200),
+        )
+        row = next(r for r in check.rows if r["metric"] == "profit_factor")
+        assert row["degradation_pct"] < 0
+        assert check.verdict == "holds_up"
+
+    def test_a_growing_drawdown_counts_as_degradation_on_its_own_row(self) -> None:
+        """Drawdown is lower-is-better, so growth is the positive percentage."""
+        check = tr.check_forward(
+            _report(
+                "back", equity_drawdown_pct=10.0, profit_factor=1.8, total_trades=480
+            ),
+            _report(
+                "forward", equity_drawdown_pct=18.0, profit_factor=1.7, total_trades=110
+            ),
+        )
+        row = next(r for r in check.rows if r["metric"] == "equity_drawdown_pct")
+        assert row["degradation_pct"] == 80.0
+
+    def test_reports_with_nothing_in_common_are_inconclusive(self) -> None:
+        check = tr.check_forward(
+            _report("back", initial_deposit=10000.0),
+            _report("forward", currency="USD"),
+        )
+        assert check.verdict == "inconclusive"
+        assert any("no metric in common" in reason for reason in check.reasons)
+
+    def test_the_compared_keys_can_be_restricted(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, sharpe_ratio=1.4, total_trades=480),
+            _report("forward", profit_factor=0.5, sharpe_ratio=1.3, total_trades=110),
+            keys=("sharpe_ratio",),
+        )
+        assert [row["metric"] for row in check.rows] == ["sharpe_ratio"]
+
+    def test_to_dict_carries_the_verdict_rows_and_thresholds(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, total_trades=480),
+            _report("forward", profit_factor=1.7, total_trades=110),
+            min_trades=25,
+            max_degradation_pct=40.0,
+        )
+        payload = check.to_dict()
+        assert payload["verdict"] == "holds_up"
+        assert payload["thresholds"] == {
+            "min_trades": 25,
+            "max_degradation_pct": 40.0,
+        }
+        assert payload["metrics"][0]["metric"] == "profit_factor"
+        assert payload["available"] is True
+
+
+class TestFormatForwardForPrompt:
+    def test_it_leads_with_the_verdict(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, total_trades=480),
+            _report("forward", profit_factor=1.7, total_trades=110),
+        )
+        assert tr.format_forward_for_prompt(check).splitlines()[0] == (
+            "forward check: holds_up"
+        )
+
+    def test_it_says_better_when_a_metric_improved(self) -> None:
+        check = tr.check_forward(
+            _report(
+                "back",
+                from_date="2022.01.01",
+                to_date="2022.12.31",
+                profit_factor=1.4,
+                net_profit=1000.0,
+                total_trades=480,
+            ),
+            _report(
+                "forward",
+                from_date="2023.01.01",
+                to_date="2023.03.31",
+                profit_factor=1.9,
+                net_profit=900.0,
+                total_trades=110,
+            ),
+        )
+        summary = tr.format_forward_for_prompt(check)
+        assert "better)" in summary
+        assert "worse)" not in summary
+
+    def test_an_unavailable_check_prints_only_its_reason(self) -> None:
+        summary = tr.format_forward_for_prompt(
+            tr.check_forward(_report("back", profit_factor=1.8))
+        )
+        assert summary.startswith("forward check: inconclusive")
+        assert "no forward report" in summary
+        assert "reasons:" in summary
+
+    def test_it_lists_reasons_and_warnings(self) -> None:
+        check = tr.check_forward(
+            _report(
+                "back", profit_factor=1.8, total_trades=480, history_quality_pct=100.0
+            ),
+            _report(
+                "forward",
+                profit_factor=0.82,
+                total_trades=140,
+                history_quality_pct=60.0,
+            ),
+        )
+        summary = tr.format_forward_for_prompt(check)
+        assert "reasons:" in summary
+        assert "warnings:" in summary
+        assert "history quality is 60%" in summary
+
+    def test_max_lines_is_respected(self) -> None:
+        check = tr.check_forward(
+            _report("back", profit_factor=1.8, total_trades=480),
+            _report("forward", profit_factor=1.7, total_trades=110),
+        )
+        assert len(tr.format_forward_for_prompt(check, max_lines=3).splitlines()) == 3
+
+
+class TestRunnerForward:
+    def test_it_returns_the_back_half_and_collects_the_forward_one(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "forward")
+        target = tmp_path / "Run.xml"
+        ini = tr.build_tester_ini(
+            expert="MyEA",
+            symbol="EURUSD",
+            forward_mode=1,
+            report=str(target.with_suffix("")),
+        )
+        outcome = tr.run_tester(
+            terminal=fake_terminal,
+            ini_text=ini,
+            report_path=target,
+            timeout=30,
+            wine=False,
+            poll_interval=0.01,
+        )
+        assert Path(outcome["report_path"]).name == "Run.htm"
+        assert Path(outcome["forward_path"]).name == "Run.forward.htm"
+        assert outcome["report"].metrics["profit_factor"] == 1.55
+        assert outcome["forward_report"].metrics["profit_factor"] == 0.91
+
+    def test_forward_mode_in_the_ini_is_enough(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No forward= argument: the runner reads ForwardMode out of the ini."""
+        monkeypatch.setenv("FAKE_MODE", "forward")
+        target = tmp_path / "Run.xml"
+        ini = tr.build_tester_ini(
+            expert="MyEA", forward_mode=2, report=str(target.with_suffix(""))
+        )
+        outcome = tr.run_tester(
+            terminal=fake_terminal,
+            ini_text=ini,
+            report_path=target,
+            timeout=30,
+            wine=False,
+            poll_interval=0.01,
+        )
+        assert "forward_report" in outcome
+
+    def test_the_forward_report_carries_the_run_metadata(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "forward")
+        target = tmp_path / "Run.xml"
+        outcome = tr.run_tester(
+            terminal=fake_terminal,
+            ini_text=tr.build_tester_ini(
+                expert="MyEA",
+                forward_mode=1,
+                report=str(target.with_suffix("")),
+            ),
+            report_path=target,
+            timeout=30,
+            wine=False,
+            poll_interval=0.01,
+        )
+        forward = outcome["forward_report"]
+        assert forward.run["exit_code"] == 0
+        assert forward.run["report_path"] == outcome["forward_path"]
+
+    def test_a_forward_run_that_writes_one_file_explains_itself(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ForwardMode set, one file written: a note, not a timeout."""
+        monkeypatch.setenv("FAKE_MODE", "htm")
+        target = tmp_path / "Run.xml"
+        outcome = tr.run_tester(
+            terminal=fake_terminal,
+            ini_text=tr.build_tester_ini(
+                expert="MyEA",
+                forward_mode=1,
+                report=str(target.with_suffix("")),
+            ),
+            report_path=target,
+            timeout=30,
+            wine=False,
+            poll_interval=0.01,
+            forward_grace=0.3,
+        )
+        assert "forward_report" not in outcome
+        assert "Back Result" in outcome["forward_note"]
+
+    def test_forward_off_ignores_the_second_file(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "forward")
+        target = tmp_path / "Run.xml"
+        outcome = tr.run_tester(
+            terminal=fake_terminal,
+            ini_text=tr.build_tester_ini(
+                expert="MyEA",
+                report=str(target.with_suffix("")),
+            ),
+            report_path=target,
+            timeout=30,
+            wine=False,
+            poll_interval=0.01,
+            forward=False,
+        )
+        assert "forward_report" not in outcome
+        assert "forward_note" not in outcome
+
+    def test_the_ini_reader_finds_a_key(self) -> None:
+        ini = tr.build_tester_ini(expert="MyEA", forward_mode=1)
+        assert tr._ini_value(ini, "ForwardMode") == "1"
+        assert tr._ini_value(ini, "Expert") == "MyEA"
+        assert tr._ini_value(ini, "NotThere") is None
+
+
+class TestForwardCli:
+    def test_a_forward_report_adds_a_check_block(self, forward_files: Any) -> None:
+        back, mild, _flip = forward_files
+        result = _run(["--report", str(back), "--forward-report", str(mild)])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        checks = payload["forward_checks"]
+        assert len(checks) == 1
+        assert checks[0]["verdict"] == "holds_up"
+        assert checks[0]["per_day"]["net_profit"]["degradation_pct"] == 14.79
+
+    def test_a_flipped_forward_half_is_reported_as_degrades(
+        self, forward_files: Any
+    ) -> None:
+        back, _mild, flip = forward_files
+        result = _run(["--report", str(back), "--forward-report", str(flip)])
+        payload = json.loads(result.stdout)
+        assert payload["forward_checks"][0]["verdict"] == "degrades"
+        assert "[forward] verdict: degrades" in result.output
+
+    def test_the_prompt_summary_is_included(self, forward_files: Any) -> None:
+        back, mild, _flip = forward_files
+        result = _run(
+            ["--report", str(back), "--forward-report", str(mild), "--prompt"]
+        )
+        summary = json.loads(result.stdout)["forward_checks"][0]["summary"]
+        assert summary.startswith("forward check: holds_up")
+
+    def test_min_forward_trades_reaches_the_check(self, forward_files: Any) -> None:
+        back, mild, _flip = forward_files
+        result = _run(
+            [
+                "--report",
+                str(back),
+                "--forward-report",
+                str(mild),
+                "--min-forward-trades",
+                "500",
+            ]
+        )
+        check = json.loads(result.stdout)["forward_checks"][0]
+        assert check["verdict"] == "inconclusive"
+        assert check["thresholds"]["min_trades"] == 500
+
+    def test_max_degradation_pct_reaches_the_check(self, forward_files: Any) -> None:
+        """24% off the profit factor: fine by default, a failure at 10%."""
+        back, mild, _flip = forward_files
+        default = json.loads(
+            _run(["--report", str(back), "--forward-report", str(mild)]).stdout
+        )["forward_checks"][0]
+        assert default["verdict"] == "holds_up"
+        strict = json.loads(
+            _run(
+                [
+                    "--report",
+                    str(back),
+                    "--forward-report",
+                    str(mild),
+                    "--max-degradation-pct",
+                    "10",
+                ]
+            ).stdout
+        )["forward_checks"][0]
+        assert strict["verdict"] == "degrades"
+        assert strict["thresholds"]["max_degradation_pct"] == 10.0
+
+    def test_mismatched_counts_are_an_error(self, forward_files: Any) -> None:
+        back, mild, flip = forward_files
+        result = _run(
+            [
+                "--report",
+                str(back),
+                "--forward-report",
+                str(mild),
+                "--forward-report",
+                str(flip),
+            ]
+        )
+        assert result.exit_code == 2
+        assert "one file per back-half report" in result.output
+
+    def test_an_optimization_table_as_the_forward_half_is_refused(
+        self, forward_files: Any, tmp_path: Path
+    ) -> None:
+        back, _mild, _flip = forward_files
+        table = tmp_path / "opt.xml"
+        table.write_text(
+            '<?xml version="1.0"?>\n<Table><Row>'
+            + "".join(f"<Cell>{cell}</Cell>" for cell in OPT_HEADER)
+            + "</Row></Table>\n",
+            encoding="utf-8",
+        )
+        result = _run(["--report", str(back), "--forward-report", str(table)])
+        assert result.exit_code == 2
+        assert "Back Result" in result.output
+
+    def test_help_documents_the_forward_options(self) -> None:
+        result = _run(["--help"])
+        assert result.exit_code == 0
+        for option in (
+            "--forward-report",
+            "--min-forward-trades",
+            "--max-degradation-pct",
+        ):
+            assert option in result.output
+
+    def test_a_forward_run_from_the_cli_checks_both_halves(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "forward")
+        monkeypatch.setattr(tr, "find_terminal", lambda explicit=None: fake_terminal)
+        result = _run(
+            [
+                "--run",
+                "--expert",
+                "MyEA",
+                "--symbol",
+                "EURUSD",
+                "--forward-mode",
+                "1",
+                "--out-report",
+                str(tmp_path / "Run.xml"),
+            ]
+        )
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["reports"][0]["metrics"]["profit_factor"] == 1.55
+        assert payload["forward_checks"][0]["verdict"] == "degrades"
+        assert "[forward] verdict: degrades" in result.output

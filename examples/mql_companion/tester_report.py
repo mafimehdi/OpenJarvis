@@ -1624,12 +1624,14 @@ def check_forward(
                 entry["back"] = round(left / check.back_days, 4)
             if right is not None:
                 entry["forward"] = round(right / check.forward_days, 4)
-            # Fewer trades per day is a change in activity, not a failure, so
-            # only money gets a degradation figure.
+            # Fewer trades per day is activity, not failure, and a metric only
+            # one half reports gets no degradation figure at all: turning a
+            # missing number into "fell 100%" would be inventing a result.
             if (
-                key not in ("total_trades",)
+                key != "total_trades"
                 and key not in flipped
                 and entry.get("back")
+                and entry.get("forward") is not None
             ):
                 entry["degradation_pct"] = round(
                     (entry["back"] - (entry["forward"] or 0.0))
