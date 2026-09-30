@@ -2017,6 +2017,17 @@ def build_tools(
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = report.to_dict()
         payload["found_by"] = found_by
+        if isinstance(report, tester_lib.OptimizationResult):
+            # A table of passes has no `metrics`, and format_for_prompt would
+            # reach for one. Rank and check it the way mt5_tester_optimization
+            # does, so a run that optimized comes back as useful as a read.
+            analysis = tester_lib.analyze_optimization(report)
+            payload["analysis"] = analysis
+            if summary:
+                payload["summary"] = tester_lib.format_optimization_for_prompt(
+                    report, analysis
+                )
+            return payload
         if summary:
             payload["summary"] = tester_lib.format_for_prompt(report)
         if rules:
@@ -2239,9 +2250,18 @@ def build_tools(
                         forward_file, forward_by = companion, "companion"
                         break
         try:
-            back = tester_lib.parse_report(back_path)
+            parsed_back = tester_lib.parse_any_report(back_path)
         except (OSError, ValueError) as exc:
             raise Mt5Error(f"could not parse {back_path}: {exc}") from exc
+        if isinstance(parsed_back, tester_lib.OptimizationResult):
+            raise Mt5Error(
+                f"{back_path} is a table of optimization passes, not a testing "
+                "report, so there is no back half to check. Its out-of-sample "
+                "numbers are the Back Result and Forward Result columns of that "
+                "same table — mt5_tester_optimization reads them, including "
+                "whether the in-sample ranking survived."
+            )
+        back = parsed_back
 
         forward: Any = None
         if forward_file is not None:
@@ -2286,10 +2306,18 @@ def build_tools(
                 f"back companion ({back_path}) was used as the in-sample side."
             )
         if forward is None:
-            notes.append(
-                "no forward report was found: the run had ForwardMode off, or "
-                "MT5 put both halves in one optimization table."
-            )
+            if tester_lib.is_forward_report(back_path):
+                notes.append(
+                    f"{Path(back_path).name} is itself the forward half, and no "
+                    "back companion was found beside it, so there is nothing to "
+                    "compare it with — pass the in-sample report as `path` (or "
+                    "both files explicitly)."
+                )
+            else:
+                notes.append(
+                    "no forward report was found: the run had ForwardMode off, or "
+                    "MT5 put both halves in one optimization table."
+                )
         payload["note"] = " ".join(notes)
         return payload
 
@@ -2355,6 +2383,10 @@ def build_tools(
                 report_path=target,
                 timeout=wait_for,
                 portable=bool(portable),
+                # An optimization run produces a table of passes, not a set of
+                # metrics, and which one it is depends on the ini: let the file
+                # decide rather than assuming a testing report.
+                parser=tester_lib.parse_any_report,
             )
         except (TimeoutError, FileNotFoundError, OSError) as exc:
             raise Mt5Error(f"tester run failed: {exc}") from exc
@@ -2364,7 +2396,16 @@ def build_tools(
         forward_report = outcome.pop("forward_report", None)
         forward_note = outcome.pop("forward_note", "")
         payload = _report_payload(report, None, bool(summary), "run")
-        if forward_report is not None and hasattr(forward_report, "to_dict"):
+        if forward_report is not None and not isinstance(
+            forward_report, tester_lib.TesterReport
+        ):
+            payload["forward_note"] = (
+                "the forward half of this run is a table of optimization passes, "
+                "not a testing report, so there is no pair to check: its Back "
+                "Result and Forward Result columns are the out-of-sample "
+                "comparison, and mt5_tester_optimization reads them."
+            )
+        elif forward_report is not None:
             check = tester_lib.check_forward(
                 report,
                 forward_report,

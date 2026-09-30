@@ -1615,3 +1615,186 @@ class TestTesterForwardCheckTool:
         before = sorted(item.name for item in tmp_path.iterdir())
         _payload(server, "mt5_tester_forward_check", path=str(back))
         assert sorted(item.name for item in tmp_path.iterdir()) == before
+
+
+# ---------------------------------------------------------------------------
+# The runner tool has to survive an optimization run and a forward run
+# ---------------------------------------------------------------------------
+
+OPT_TABLE_HEADER: Tuple[str, ...] = (
+    "Pass",
+    "Result",
+    "Profit",
+    "Expected Payoff",
+    "Profit Factor",
+    "Recovery Factor",
+    "Sharpe Ratio",
+    "Custom",
+    "Equity DD %",
+    "Trades",
+    "InpFastEMA",
+)
+
+
+def _opt_table_xml() -> str:
+    """A two-pass optimization table, the way MT5 writes one."""
+
+    def row(cells: Tuple[str, ...]) -> str:
+        return "  <Row>" + "".join(f"<Cell>{c}</Cell>" for c in cells) + "</Row>"
+
+    return "\n".join(
+        [
+            '<?xml version="1.0" encoding="ANSI"?>',
+            "<Table>",
+            row(OPT_TABLE_HEADER),
+            row(
+                ("7", "11200", "1200", "6", "1.4", "2.5", "1.1", "0", "8", "200", "12")
+            ),
+            row(
+                ("9", "10800", "800", "4", "1.2", "1.8", "0.9", "0", "11", "200", "20")
+            ),
+            "</Table>",
+        ]
+    )
+
+
+MINI_TEST_HTML = (
+    "<html><body><table>"
+    "<tr><td>Total Net Profit</td><td>1 850.25</td></tr>"
+    "<tr><td>Profit Factor</td><td>1.55</td></tr>"
+    "<tr><td>Total Trades</td><td>310</td></tr>"
+    "</table></body></html>"
+)
+
+BASH_TERMINAL_HEAD = (
+    "#!/usr/bin/env bash\n"
+    'cfg=""; for a in "$@"; do case "$a" in /config:*) '
+    r'cfg="${a#/config:}"; cfg="${cfg%\"}"; cfg="${cfg#\"}"'
+    ";; esac; done\n"
+    'report=$(grep -m1 "^Report=" "$cfg" | cut -d= -f2-)\n'
+    'mkdir -p "$(dirname "$report")"\n'
+)
+
+
+def _writes(extension: str, content: str) -> str:
+    """A bash fragment: write `content` to the report name plus `extension`."""
+    return f"cat > \"${{report}}.{extension}\" <<'PAYLOAD'\n{content}\nPAYLOAD\n"
+
+
+@pytest.fixture()
+def fake_terminal_factory(tmp_path: Path) -> Any:
+    """Build a stand-in terminal64 that writes whatever fragments it is given."""
+
+    def build(*fragments: str) -> Path:
+        script = tmp_path / "terminal64"
+        script.write_text(
+            BASH_TERMINAL_HEAD + "".join(fragments) + "exit 0\n", encoding="utf-8"
+        )
+        script.chmod(0o755)
+        return script
+
+    return build
+
+
+class TestTesterRunReportShapes:
+    """What the run tool returns depends on what the run produced."""
+
+    def test_an_optimization_run_returns_passes_not_a_crash(
+        self,
+        bridge: ModuleType,
+        stub: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_terminal_factory: Any,
+    ) -> None:
+        """A table of passes has no `metrics`; summarizing one used to raise."""
+        tester_lib = bridge.tester_lib
+        terminal = fake_terminal_factory(_writes("xml", _opt_table_xml()))
+        monkeypatch.setattr(tester_lib, "find_terminal", lambda explicit=None: terminal)
+        srv = bridge.build_server(stub, allow_tester_run=True)
+        payload = _payload(
+            srv,
+            "mt5_tester_run",
+            expert="MyEA",
+            optimization=2,
+            report_path=str(tmp_path / "out" / "Run.xml"),
+            timeout=60,
+        )
+        assert payload["passes"] == 2
+        assert payload["found_by"] == "run"
+        assert payload["summary"].startswith("optimization:")
+        assert payload["analysis"]["top"][0]["pass"] == 7
+
+    def test_a_forward_half_that_is_a_table_is_explained_not_checked(
+        self,
+        bridge: ModuleType,
+        stub: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_terminal_factory: Any,
+    ) -> None:
+        tester_lib = bridge.tester_lib
+        terminal = fake_terminal_factory(
+            _writes("htm", MINI_TEST_HTML), _writes("forward.xml", _opt_table_xml())
+        )
+        monkeypatch.setattr(tester_lib, "find_terminal", lambda explicit=None: terminal)
+        srv = bridge.build_server(stub, allow_tester_run=True)
+        payload = _payload(
+            srv,
+            "mt5_tester_run",
+            expert="MyEA",
+            forward_mode=1,
+            report_path=str(tmp_path / "out" / "Run.xml"),
+            timeout=60,
+        )
+        assert payload["metrics"]["profit_factor"] == 1.55
+        assert "forward_check" not in payload
+        assert "Back Result" in payload["forward_note"]
+
+    def test_a_forward_run_checks_both_halves(
+        self,
+        bridge: ModuleType,
+        stub: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_terminal_factory: Any,
+    ) -> None:
+        tester_lib = bridge.tester_lib
+        terminal = fake_terminal_factory(
+            _writes("htm", FWD_BACK_HTML), _writes("forward.htm", FWD_FAIL_HTML)
+        )
+        monkeypatch.setattr(tester_lib, "find_terminal", lambda explicit=None: terminal)
+        srv = bridge.build_server(stub, allow_tester_run=True)
+        payload = _payload(
+            srv,
+            "mt5_tester_run",
+            expert="MyEA",
+            forward_mode=1,
+            report_path=str(tmp_path / "out" / "Run.xml"),
+            timeout=60,
+        )
+        assert payload["forward_check"]["verdict"] == "degrades"
+        assert payload["forward"]["metrics"]["profit_factor"] == 0.82
+        assert "forward check: degrades" in payload["forward_summary"]
+
+
+class TestForwardCheckRefusals:
+    def test_an_optimization_table_as_the_report_is_refused(
+        self, server: Any, optimization_report: Path
+    ) -> None:
+        """An empty inconclusive would look like an answer; steer instead."""
+        out = _call(server, "mt5_tester_forward_check", path=str(optimization_report))
+        assert out["isError"] is True
+        assert "table of optimization passes" in out["text"]
+        assert "mt5_tester_optimization" in out["text"]
+        assert "Back Result" in out["text"]
+
+    def test_a_lonely_forward_file_says_its_companion_is_missing(
+        self, server: Any, tmp_path: Path
+    ) -> None:
+        lonely = tmp_path / "Only.forward.htm"
+        lonely.write_text(MINI_TEST_HTML, encoding="utf-8")
+        payload = _payload(server, "mt5_tester_forward_check", path=str(lonely))
+        assert payload["forward_check"]["available"] is False
+        assert "is itself the forward half" in payload["note"]
+        assert "ForwardMode off" not in payload["note"]

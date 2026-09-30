@@ -1096,6 +1096,34 @@ HTM
 </table></body></html>
 FWD
     exit 0;;
+  forwardtable)
+    # A forward run whose in-sample half is a testing report and whose forward
+    # half comes back as a table: the pair cannot be forward-checked, and saying
+    # so beats reporting nothing.
+    cat > "${report}.htm" <<HTM
+<html><body><table>
+<tr><td>Total Net Profit</td><td>1 850.25</td></tr>
+<tr><td>Profit Factor</td><td>1.55</td></tr>
+<tr><td>Total Trades</td><td>310</td></tr>
+</table></body></html>
+HTM
+    cat > "${report}.forward.xml" <<FWD
+<?xml version="1.0" encoding="ANSI"?>
+<Table>
+  <Row>
+    <Cell>Pass</Cell><Cell>Result</Cell><Cell>Profit</Cell>
+    <Cell>Expected Payoff</Cell><Cell>Profit Factor</Cell>
+    <Cell>Recovery Factor</Cell><Cell>Sharpe Ratio</Cell><Cell>Custom</Cell>
+    <Cell>Equity DD %</Cell><Cell>Trades</Cell><Cell>InpFastEMA</Cell>
+  </Row>
+  <Row>
+    <Cell>7</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>12</Cell>
+  </Row>
+</Table>
+FWD
+    exit 0;;
   noreport) exit 0;;
   fail) exit 7;;
   failafter) exit 7;;
@@ -3429,3 +3457,31 @@ class TestForwardCli:
         assert payload["reports"][0]["metrics"]["profit_factor"] == 1.55
         assert payload["forward_checks"][0]["verdict"] == "degrades"
         assert "[forward] verdict: degrades" in result.output
+
+
+class TestForwardCliTableHalf:
+    """A forward half that is a table cannot be checked — say so, do not guess."""
+
+    def test_a_forward_half_that_is_a_table_is_announced(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "forwardtable")
+        monkeypatch.setattr(tr, "find_terminal", lambda explicit=None: fake_terminal)
+        result = _run(
+            [
+                "--run",
+                "--expert",
+                "MyEA",
+                "--symbol",
+                "EURUSD",
+                "--forward-mode",
+                "1",
+                "--out-report",
+                str(tmp_path / "Run.xml"),
+            ]
+        )
+        assert result.exit_code == 0
+        assert "table of optimization passes" in result.output
+        payload = json.loads(result.stdout)
+        assert "forward_checks" not in payload
+        assert payload["reports"][0]["metrics"]["profit_factor"] == 1.55

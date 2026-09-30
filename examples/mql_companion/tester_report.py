@@ -4106,6 +4106,13 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
         ):
             forward_pairs.append((produced, forward_produced))
             click.echo(f"  [forward] {outcome.get('forward_path')}", err=True)
+        elif forward_produced is not None:
+            click.echo(
+                "  [forward] the forward half is a table of optimization passes, "
+                "not a testing report: its Back Result / Forward Result columns "
+                "carry the comparison",
+                err=True,
+            )
         elif outcome.get("forward_note"):
             click.echo(f"  [forward] {outcome['forward_note']}", err=True)
         click.echo(
