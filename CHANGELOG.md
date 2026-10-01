@@ -146,6 +146,22 @@ clearer lesson for the model. The account password is read only from the
 environment, never a flag, and stdout carries JSON-RPC and nothing else (one
 stray `print` would break the transport, so a test pins it).
 
+Every tool also declares the MCP annotation hints a client routes approvals by,
+derived from the tool definition rather than repeated per tool: `readOnlyHint`,
+`destructiveHint` and `idempotentHint` follow `read_only`, and `openWorldHint`
+follows a new `open_world` field. Live reads are open-world — quotes, account
+state and positions come from a broker's server through the terminal, which the
+spec counts as reaching outside a closed domain — and only the four tools that
+parse a report file on this machine declare `openWorldHint: false`
+(`CLOSED_WORLD_TOOLS`). The bridge had been reporting every tool as closed-world,
+which understated the reach of exactly the tools that touch a broker.
+`requires_confirmation` stays unset on purpose: `ToolExecutor` refuses a tool
+that declares it when no confirmation callback is plumbed and the MCP path has
+none, so the flag would make the tool uncallable rather than add a human. What a
+real per-call confirmation would take — a callback through `build_server`, or a
+queue into `ApprovalStore` — is written up in `REVIEW-NOTES.md` as a proposal
+instead of being assumed here.
+
 One wiring note, now documented in the preset, the example README and the
 tutorial because it is invisible until it bites: `jarvis ask` resolves its tool
 set from `[tools] enabled` and then filters MCP tools *by those names*, so a

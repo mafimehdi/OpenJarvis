@@ -70,7 +70,7 @@ import sys
 import tempfile
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -1383,6 +1383,24 @@ class ToolDef:
     handler: Callable[..., Any]
     timeout: float = 30.0
     read_only: bool = True
+    #: MCP ``openWorldHint``: does the answer come from outside a closed domain
+    #: this process controls? Defaults to True, which is the spec's default and
+    #: the honest answer for a bridge whose quotes, account state and orders all
+    #: come from a broker's server. The tools that only parse files on this
+    #: machine are listed in ``CLOSED_WORLD_TOOLS``.
+    open_world: bool = True
+
+
+#: Tools whose whole job is reading a file this machine already has. Everything
+#: else reaches a terminal that is talking to a broker, so it stays open-world.
+CLOSED_WORLD_TOOLS: frozenset = frozenset(
+    {
+        "mt5_tester_report",
+        "mt5_tester_compare",
+        "mt5_tester_optimization",
+        "mt5_tester_forward_check",
+    }
+)
 
 
 class BridgeTool(BaseTool):
@@ -1406,7 +1424,23 @@ class BridgeTool(BaseTool):
             parameters=d.schema,
             category="trading",
             timeout_seconds=d.timeout,
-            metadata={"source": "mt5-mcp", "read_only": d.read_only},
+            # ``requires_confirmation`` is deliberately left at its default.
+            # ToolExecutor refuses a tool that declares it when no confirmation
+            # callback is plumbed, and the MCP path this bridge is built for has
+            # none — so setting it would not add a human to the loop, it would
+            # make the tool uncallable. Enforcement stays where it can actually
+            # run: the tool is not registered without --allow-trading (and
+            # mt5_tester_run without --allow-tester), _assert_demo_account
+            # refuses anything that is not a demo account, and the annotations
+            # below tell a host that this reaches a broker so it can route the
+            # call through its own approval flow. Adding a per-call prompt means
+            # plumbing a callback through build_server (or queuing into
+            # ApprovalStore), which is a change to the bridge's contract.
+            metadata={
+                "source": "mt5-mcp",
+                "read_only": d.read_only,
+                "open_world": d.open_world,
+            },
         )
 
     def execute(self, **params: Any) -> ToolResult:
@@ -2729,7 +2763,13 @@ def build_tools(
                 )
             )
 
-    return defs
+    # Frozen dataclass, so the closed-world readers are rebuilt rather than
+    # mutated: four tools parse a report file, and saying they stay inside a
+    # closed domain is the one openWorldHint=False this bridge can justify.
+    return [
+        replace(d, open_world=False) if d.name in CLOSED_WORLD_TOOLS else d
+        for d in defs
+    ]
 
 
 class Mt5MCPServer(MCPServer):
@@ -2748,7 +2788,7 @@ class Mt5MCPServer(MCPServer):
                     "readOnlyHint": read_only,
                     "destructiveHint": not read_only,
                     "idempotentHint": read_only,
-                    "openWorldHint": False,
+                    "openWorldHint": tool.defn.open_world,
                 }
 
     def _handle_initialize(self, req: MCPRequest) -> MCPResponse:

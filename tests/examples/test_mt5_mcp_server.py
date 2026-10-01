@@ -269,6 +269,10 @@ class TestToolTable:
         for tool in tools:
             assert tool["annotations"]["readOnlyHint"] is True
             assert tool["annotations"]["destructiveHint"] is False
+            # Reads still reach a broker through the terminal, so they are
+            # open-world unless the tool only parses a local file.
+            expected_open = tool["name"] not in bridge.CLOSED_WORLD_TOOLS
+            assert tool["annotations"]["openWorldHint"] is expected_open
 
     def test_the_trading_tool_needs_an_explicit_flag(
         self, bridge: ModuleType, stub: Any
@@ -280,6 +284,52 @@ class TestToolTable:
         annotations = tools["mt5_order_send"]["annotations"]
         assert annotations["readOnlyHint"] is False
         assert annotations["destructiveHint"] is True
+        assert annotations["openWorldHint"] is True
+        # Sending the same order twice is two orders.
+        assert annotations["idempotentHint"] is False
+
+    def test_open_world_is_declared_per_tool(
+        self, bridge: ModuleType, stub: Any
+    ) -> None:
+        """Only the four readers that parse a local file are closed-world.
+
+        Everything else answers from a terminal that is talking to a broker,
+        which the MCP spec calls open-world: quotes, account state, positions
+        and orders come from outside any domain this process controls.
+        Declaring those closed would tell a client's approval routing that
+        there is nothing external to be careful about — the opposite of the
+        truth for the one tool that can move money.
+        """
+        server = bridge.build_server(stub, allow_trading=True, allow_tester_run=True)
+        response = server.handle(bridge.MCPRequest(method="tools/list", id=1))
+        tools = {t["name"]: t for t in response.result["tools"]}
+        # Every name in the set must still be a real tool: a rename would
+        # otherwise leave the set marking nothing at all.
+        assert set(bridge.CLOSED_WORLD_TOOLS) <= set(tools)
+        for name, tool in tools.items():
+            expected = name not in bridge.CLOSED_WORLD_TOOLS
+            assert tool["annotations"]["openWorldHint"] is expected, name
+
+    def test_confirmation_is_left_to_the_host_not_preempted(
+        self, bridge: ModuleType, stub: Any
+    ) -> None:
+        """No bridge tool declares ``requires_confirmation`` — on purpose.
+
+        ``ToolExecutor`` refuses a tool that declares it when no confirmation
+        callback is plumbed, and this bridge's MCP path has none, so the flag
+        would make the tool uncallable instead of putting a human in the loop.
+        Flipping it needs a callback threaded through ``build_server`` (or a
+        queue into ``ApprovalStore``); until then the gates that actually run
+        are the registration flags and the demo-account check, and the
+        annotations are what tell a host the call reaches a broker.
+        """
+        defs = bridge.build_tools(stub, allow_trading=True, allow_tester_run=True)
+        specs = {d.name: bridge.BridgeTool(d).spec for d in defs}
+        assert specs, "no tools were built"
+        assert all(not spec.requires_confirmation for spec in specs.values())
+        assert specs["mt5_order_send"].metadata["read_only"] is False
+        assert specs["mt5_order_send"].metadata["open_world"] is True
+        assert specs["mt5_tester_report"].metadata["open_world"] is False
 
     def test_schemas_are_well_formed(self, server: Any, bridge: ModuleType) -> None:
         response = server.handle(bridge.MCPRequest(method="tools/list", id=1))

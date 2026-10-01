@@ -275,6 +275,24 @@ now answers from the terminal instead of from a guess.
    history.
 7. `--http` refuses to bind a non-loopback address without `--token`.
 
+### What the annotations tell a client
+
+Every tool also declares the MCP annotation hints a client routes approvals by,
+derived from its definition rather than repeated by hand: `readOnlyHint`,
+`destructiveHint` and `idempotentHint` follow `read_only`, and `openWorldHint`
+follows `open_world`. Reads of live data are **open-world** — quotes, account
+state and positions arrive from a broker's server through the terminal, which
+the spec counts as reaching outside a closed domain — and only the four tools
+that parse a report file on this machine declare `openWorldHint: false`
+(`CLOSED_WORLD_TOOLS`). Calling a broker read closed-world would understate
+exactly the reach a client's approval routing exists to catch.
+
+`requires_confirmation` is deliberately left unset. `ToolExecutor` refuses a
+tool that declares it when no confirmation callback is plumbed, and the MCP path
+this bridge is built for has none — so the flag would make the tool uncallable
+rather than put a human in the loop. `REVIEW-NOTES.md` writes up what a real
+per-call confirmation would take.
+
 ### Developing without a terminal
 
 `--stub` serves a deterministic synthetic market — five symbols, a seeded

@@ -214,8 +214,47 @@ Not pinned, and cannot be:
 
 ## Security posture
 
-`mt5_order_send` is gated on a **demo account check** with no flag that lifts it; the
-guard is a function to edit deliberately, not a setting to flip. A reviewer with trading
-experience should read that path first: this bridge runs commands on a machine that can
-reach money, and the demo guard is the only thing standing between an agent and a live
-position.
+Enforced today, in the order it bites:
+
+1. `mt5_order_send` is not registered at all without `--allow-trading`, and
+   `mt5_tester_run` not without `--allow-tester`. An agent cannot call a tool it
+   cannot see.
+2. With the flag, orders still execute only on a **demo** account —
+   `_assert_demo_account()`, and no combination of flags lifts it.
+3. A market order without a stop loss is refused, volume must be an exact
+   multiple of the lot step, SL/TP are checked against the broker's stops level
+   and prices are snapped to the tick grid before anything is sent.
+4. The account password comes from the environment only, and `--http` refuses a
+   non-loopback bind without `--token`.
+5. Every tool declares its MCP annotation hints — `readOnlyHint`,
+   `destructiveHint`, `idempotentHint`, `openWorldHint` — so a client can route
+   the call by risk. Live reads are open-world because they come from a broker's
+   server; only the four local-file readers in `CLOSED_WORLD_TOOLS` declare
+   themselves closed.
+
+Deliberately *not* done. Each needs a maintainer decision rather than an
+assumption, and `CONTRIBUTING.md` asks for an issue before non-trivial changes:
+
+- **`requires_confirmation` on `mt5_order_send`.** `ToolExecutor` refuses a tool
+  that declares it when no confirmation callback is plumbed, and the MCP path
+  has none, so setting the flag today would make the tool uncallable rather than
+  put a human in the loop. The honest version threads a callback through
+  `build_server` — the bridge runs on the terminal's machine, which is where a
+  human is, and its stdout is JSON-RPC so a prompt has to go to stderr — or
+  queues the action into `ApprovalStore`.
+  `tests/examples/test_mt5_mcp_server.py::TestToolTable` pins the current choice
+  so flipping it is a deliberate act rather than a side effect.
+- **`required_capabilities`.** Declaring a capability would let an
+  `AgentPolicy` decide which agents may touch the bridge at all. No existing
+  `Capability` value means "trade" (`tool:invoke` is about tools, not money),
+  adding one to `src/openjarvis/security/capabilities.py` is a core change, and
+  declaring an existing value could lock the bridge out of a default-deny
+  deployment.
+- **Deleting `mt5_order_send` from the example.** It is the only part of the
+  bridge that demonstrates the gates above, and `--stub-trade-mode real`
+  exercises them on any OS. Removing it would remove the demonstration rather
+  than the risk: an agent with `shell_exec` can drive the terminal directly.
+
+A reviewer with trading experience should still read `_assert_demo_account()`
+and the order path first. This bridge runs commands on a machine that can reach
+money, and layers 1-4 are what stand between an agent and a position.
