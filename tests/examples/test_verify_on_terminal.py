@@ -28,7 +28,7 @@ import stat
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 from click.testing import CliRunner
@@ -68,10 +68,37 @@ echo "$@" >> "$FAKE_CALL_LOG"
 report=$(grep -m1 '^Report=' "$cfg" | cut -d= -f2-)
 from=$(grep -m1 '^FromDate=' "$cfg" | cut -d= -f2-)
 fmode=$(grep -m1 '^ForwardMode=' "$cfg" | cut -d= -f2-)
+opt=$(grep -m1 '^Optimization=' "$cfg" | cut -d= -f2-)
+[ "${FAKE_MODE:-ok}" = "ignoreopt" ] && opt=0
 sleep "${FAKE_DELAY:-0}"
 case "${FAKE_MODE:-ok}" in
   noreport) exit 0;;
 esac
+if [ "${opt:-0}" -gt 0 ]; then
+  # An optimization writes one table, the way the terminal does.
+  cat > "${report}.xml" <<OPT
+<?xml version="1.0" encoding="ANSI"?>
+<Table>
+  <Row>
+    <Cell>Pass</Cell><Cell>Result</Cell><Cell>Profit</Cell>
+    <Cell>Expected Payoff</Cell><Cell>Profit Factor</Cell>
+    <Cell>Recovery Factor</Cell><Cell>Sharpe Ratio</Cell><Cell>Custom</Cell>
+    <Cell>Equity DD %</Cell><Cell>Trades</Cell><Cell>InpFastEMA</Cell>
+  </Row>
+  <Row>
+    <Cell>4</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>12</Cell>
+  </Row>
+  <Row>
+    <Cell>9</Cell><Cell>10800</Cell><Cell>800</Cell><Cell>4</Cell>
+    <Cell>1.2</Cell><Cell>1.8</Cell><Cell>0.9</Cell><Cell>0</Cell>
+    <Cell>11</Cell><Cell>200</Cell><Cell>20</Cell>
+  </Row>
+</Table>
+OPT
+  exit 0
+fi
 case "${FAKE_MODE:-ok}" in
   backonly) mid="" ;;
   *)
@@ -384,6 +411,64 @@ class TestReadOnlyGuard:
         result = verifier.check_10_bridge()
         assert result.status == vt.SKIPPED
         assert "Windows-only" in result.note
+
+
+class TestOptInRuns:
+    """The two checks that only run with a flag — and only on a real machine.
+
+    They are exercised here against the fake terminal so that a Windows run
+    fails on MetaTrader's behaviour rather than on a typo in the check.
+    """
+
+    def _verifier(self, fake_terminal: Path, tmp_path: Path, **kw: Any) -> vt.Verifier:
+        args: Dict[str, Any] = {
+            "terminal": fake_terminal,
+            "expert": "MyEA",
+            "symbol": "EURUSD",
+            "period": "H1",
+            "from_date": "2022.01.01",
+            "to_date": "2023.03.31",
+            "out_dir": tmp_path / "reports",
+            "modes": [1],
+            "set_file": "",
+            "timeout": 60.0,
+            "allow_runs": True,
+        }
+        args.update(kw)
+        return vt.Verifier(**args)
+
+    def test_model4_is_timed_and_does_not_claim_to_see_the_ui(
+        self, fake_terminal: Path, tmp_path: Path
+    ) -> None:
+        verifier = self._verifier(fake_terminal, tmp_path)
+        result = verifier.check_3_model4()
+        assert result.status == vt.UNKNOWN
+        joined = "\n".join(result.evidence)
+        assert "model 0:" in joined
+        assert "model 4:" in joined
+        assert verifier.launches == 2
+        # The honest part: a script cannot see a frozen UI thread.
+        assert "not observable from a script" in result.note
+
+    def test_an_optimization_run_writes_a_table(
+        self, fake_terminal: Path, tmp_path: Path
+    ) -> None:
+        verifier = self._verifier(fake_terminal, tmp_path, set_file="MyEA.set")
+        result = verifier.check_9_optimization_extension()
+        assert result.status == vt.PASS, result.evidence
+        joined = "\n".join(result.evidence)
+        assert "optimization table: 2 passes" in joined
+        assert "Pass" in joined and "Sharpe Ratio" in joined
+        assert "InpFastEMA" in joined
+
+    def test_an_optimization_that_produced_no_table_fails(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "ignoreopt")
+        verifier = self._verifier(fake_terminal, tmp_path, set_file="MyEA.set")
+        result = verifier.check_9_optimization_extension()
+        assert result.status == vt.FAIL
+        assert "parsed as a testing report" in "\n".join(result.evidence)
 
 
 class TestReportAndOptIn:

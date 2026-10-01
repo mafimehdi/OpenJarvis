@@ -780,8 +780,14 @@ class Verifier:
             return result
         passes = getattr(report, "passes", None)
         if passes:
-            header = list(passes[0].cells)[:6]
-            result.add(f"optimization table: {len(passes)} passes, header {header}")
+            # The header lives on the table, not on a row: a pass carries
+            # .number/.metrics/.inputs, and .columns names every column.
+            columns = list(getattr(report, "columns", []))[:8]
+            result.add(f"optimization table: {len(passes)} passes")
+            result.add(f"columns: {columns}")
+            result.add(
+                f"parameter_names: {list(getattr(report, 'parameter_names', []))}"
+            )
             result.status = PASS
             result.note = (
                 "An optimization wrote .xml as documented, and parse_any_report "
