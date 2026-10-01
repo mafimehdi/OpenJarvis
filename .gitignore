@@ -136,3 +136,6 @@ oj-debug.*.json
 # current directory when no --out-report is given, and MT5 names the forward half
 # of a run <name>.forward.htm — easy to commit by accident from a repo-root run.
 /TesterReport.*
+
+# verify_on_terminal.py writes terminal reports here by default
+/verify-reports/

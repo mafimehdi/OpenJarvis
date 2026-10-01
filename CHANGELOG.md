@@ -162,7 +162,7 @@ equity curve, trade and deal counts, win and loss percentages, largest and
 average win/loss, longest streaks, plus the test context down to history
 quality. The bridge serves the same data as `mt5_tester_report` and
 `mt5_tester_compare`, and `mt5_tester_run` (only with `--allow-tester`) launches
-the terminal to produce a report. 122 tests in
+the terminal to produce a report. 301 tests in
 `tests/examples/test_tester_report.py` cover it with no MetaTrader and no
 Windows.
 
@@ -325,6 +325,32 @@ test pins that a forward report from another run is never paired. That same stra
 turned out to be committed: a CLI run had written the default report name into the repo
 root and `git add -A` swept it in. Both files are removed and `.gitignore` now covers
 `/TesterReport.*`.
+
+**Verifying the assumptions a fake terminal cannot.**
+`examples/mql_companion/verify_on_terminal.py` runs the experiments
+`REVIEW-NOTES.md` lists, on a machine that has MetaTrader installed, and prints
+what it observed plus a `paste this back` block for the pull request. Eleven
+checks, numbered to match the notes: the `ForwardMode` integer→split mapping is
+derived from the dates each half actually reports; the forward companion name is
+compared with the names `forward_companion()` looks for, on disk rather than in
+theory; `process_grace` is measured by running the same config with the grace at
+0 and at 5 seconds, which is the only way to tell a real race from a machine that
+simply exits quickly; a sampler thread watches the report grow during a run to
+test `_file_is_stable`; and the decode, Wine, `ExpertParameters` and
+report-extension checks run anywhere. Nothing launches without `--yes`, and
+nothing can place an order: the only bridge tools it may call are the read-only
+names in `READ_ONLY_TOOLS`, and `_guard_read_only` raises on any other name.
+
+Its first run found a real bug. `decode_report_bytes` tried cp1251 and then
+latin-1, and since cp1251 leaves one byte value undefined (0x98) where cp1252
+leaves five, cp1251 won every contest: a French report came back as `Bйnйfice`,
+which parses and reads as nonsense. It now switches to cp1252 only when the
+cp1251 reading contains no Cyrillic *words* and every differing character is a
+Cyrillic-block character where cp1252 has a Western accent — a decision per
+document, not per character, because a lone `№` (byte 0xB9, cp1252's `™`) is
+normal in a Russian report and one ambiguous byte is not evidence of a Western
+page. Byte 0x98 is undefined in both tables and falls back to latin-1, which
+keeps every offset aligned with the file.
 
 ### Fixed
 

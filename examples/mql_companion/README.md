@@ -21,6 +21,8 @@ the only authority that matters: the compiler.
 | `tester_report.py` | Strategy Tester reader — parses `.htm`/`.xml` reports into metrics, checks CI thresholds, compares runs, ranks optimization passes with overfitting checks, reads and writes `.set` input files, checks a forward run against its out-of-sample half, and can launch a headless backtest or optimization |
 | `compile_loop.py` | compile → fix → recompile loop built on the OpenJarvis SDK |
 | `install_skill.py` | validate and install `skills/mql5-expert` into `~/.openjarvis/skills` |
+| `verify_on_terminal.py` | runs the `REVIEW-NOTES.md` checks against a real terminal and prints what it observed |
+| `REVIEW-NOTES.md` | the nine claims only a real terminal can settle, and how to settle each |
 | `skills/mql5-expert/` | `SKILL.md` instructions, a 2-step `skill.toml` pipeline, 3 reference docs, an EA template |
 
 Related pieces that live outside this directory:
@@ -593,6 +595,32 @@ parameters did not break on data the search never saw. It is not a live-trading
 forecast, and a single split is one sample — the same EA can fail on the next
 quarter. Say the split you tested and treat the verdict as a gate that was
 passed, not as a promise.
+
+## Verifying on a Real Terminal
+
+Everything above is tested with fixtures and a fake terminal, which proves the
+readers are honest about what a file contains and proves nothing about
+MetaTrader. `REVIEW-NOTES.md` lists the nine claims that rest on documentation
+and inference instead, and `verify_on_terminal.py` runs the experiments:
+
+```bash
+python examples/mql_companion/verify_on_terminal.py --list          # what it checks
+python examples/mql_companion/verify_on_terminal.py                 # plan only
+python examples/mql_companion/verify_on_terminal.py --yes           # run it
+python examples/mql_companion/verify_on_terminal.py --yes --json verify.json
+python examples/mql_companion/verify_on_terminal.py --yes --with-model4 --with-grace
+```
+
+Nothing launches the terminal without `--yes`, and nothing in the script can
+place an order: the only bridge tools it may call are the read-only names in
+`READ_ONLY_TOOLS`, and asking for any other name raises. The report ends with a
+`paste this back` block — one compact line per check — which is the part worth
+putting in the pull request. Exit status is 0 when nothing contradicted an
+assumption, 1 when something did, and 2 when no terminal was found.
+
+The expensive checks are opt-in: `--with-model4` (a real-ticks run),
+`--with-grace` (the same run twice, to measure the race `process_grace` covers),
+`--with-stability` (a sampled write), `--with-optimization` and `--with-bridge`.
 
 ## Extending
 

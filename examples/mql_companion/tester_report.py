@@ -981,8 +981,46 @@ def parse_text_report(text: str, source: str = "") -> TesterReport:
     return report
 
 
+_CYRILLIC_RUN = re.compile(r"[\u0400-\u04ff]{2,}")
+
+
+def _western_reading_is_better(cyrillic: str, western: str) -> bool:
+    """True when ANSI bytes are Western European text misread as Cyrillic.
+
+    cp1251 leaves a single byte value undefined (0x98) where cp1252 leaves
+    five, so it almost never raises and wins any first-match contest — a
+    French report comes back as ``Bйnйfice``, which parses but reads as
+    nonsense. Switching code pages on a guess is worse
+    than the disease, though: a lone ``№`` (byte 0xB9) is cp1251's numero
+    sign and cp1252's ``™``, and Russian reports use it.
+
+    So the switch needs both halves of the evidence. No run of two or more
+    Cyrillic letters in the cp1251 reading — real Cyrillic words mean a
+    Cyrillic terminal, and the decision is per document, not per character.
+    And every character where the two readings differ must be a Cyrillic-block
+    character on one side and a Western accent on the other, which is the
+    signature of accented Latin read through the wrong table. Anything else,
+    ``№`` included, stays as cp1251 decoded it.
+    """
+    if _CYRILLIC_RUN.search(cyrillic):
+        return False
+    if len(cyrillic) != len(western):
+        return False
+    differing = [(a, b) for a, b in zip(cyrillic, western) if a != b]
+    if not differing:
+        return False
+    return all(
+        "\u0400" <= a <= "\u04ff" and "\u00a0" <= b <= "\u00ff" for a, b in differing
+    )
+
+
 def decode_report_bytes(raw: bytes) -> str:
-    """MT5 writes UTF-16LE (as it does for compile logs) or UTF-8/CP1251."""
+    """MT5 writes UTF-16LE (as it does for compile logs), UTF-8, or ANSI.
+
+    ANSI is the awkward one: the terminal writes in its own code page, so the
+    same byte means ``é`` on a French install and ``й`` on a Russian one. See
+    ``_western_reading_is_better`` for how the two are told apart.
+    """
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         return raw.decode("utf-16", errors="replace")
     if b"\x00" in raw[:4096]:
@@ -991,12 +1029,22 @@ def decode_report_bytes(raw: bytes) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         pass
-    for encoding in ("cp1251", "latin-1"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:  # pragma: no cover - latin-1 never fails
-            continue
-    return raw.decode("utf-8", errors="replace")
+    try:
+        cyrillic = raw.decode("cp1251")
+    except UnicodeDecodeError:
+        # Byte 0x98 is the one value cp1251 leaves undefined, and cp1252
+        # leaves it undefined too: no table applies, so fall back to the one
+        # that maps every byte 1:1 and keeps the text aligned with the file.
+        return raw.decode("latin-1")
+    try:
+        western = raw.decode("cp1252")
+    except UnicodeDecodeError:
+        # Five byte values (0x81, 0x8D, 0x8F, 0x90, 0x9D) are undefined in
+        # cp1252, so their presence settles it: this is not a Western report.
+        return cyrillic
+    if _western_reading_is_better(cyrillic, western):
+        return western
+    return cyrillic
 
 
 def parse_report(path: Path | str) -> TesterReport:

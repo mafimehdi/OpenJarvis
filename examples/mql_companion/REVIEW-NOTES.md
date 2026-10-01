@@ -9,7 +9,29 @@ This file lists what is still an assumption, where that assumption lives in code
 docs, and the shortest way to settle it on Windows (or Wine). Ordered by how much the
 answer would change behaviour.
 
-Nothing here is a known defect. It is a list of claims we could not check from Linux.
+Nothing here is a known defect. It is a list of claims we could not check from
+Linux — except item 6, which `verify_on_terminal.py` settled on its first run and
+which is kept here because the fix still wants one real report from a non-English
+terminal.
+
+## One command instead of nine experiments
+
+`verify_on_terminal.py` runs these checks on a machine that has the terminal
+installed and prints what it observed:
+
+```bash
+python examples/mql_companion/verify_on_terminal.py --list
+python examples/mql_companion/verify_on_terminal.py            # plan only
+python examples/mql_companion/verify_on_terminal.py --yes      # run it
+python examples/mql_companion/verify_on_terminal.py --yes --json verify.json
+```
+
+The check numbers below are the script's numbers. Nothing launches without
+`--yes`, the expensive checks are opt-in (`--with-model4`, `--with-grace`,
+`--with-stability`, `--with-optimization`, `--with-bridge`), and nothing in the
+script can place an order — the only bridge tools it may call are the read-only
+names in `READ_ONLY_TOOLS`, and any other name raises. The report ends with a
+`paste this back` block; send that and these notes can be turned into answers.
 
 ---
 
@@ -102,18 +124,34 @@ still a wrong answer.
 
 ---
 
-## 6. ANSI decode order (`cp1251` before `cp1252`)
+## 6. ANSI code page: cp1251 or cp1252 — settled, one report still wanted
 
-**Assumption.** MT5 writes reports in ANSI, not UTF-8. `decode_report_bytes` tries a
-strict UTF-8 decode first, then Cyrillic (`cp1251`), then Western (`cp1252`).
+**What it was.** MT5 writes reports in ANSI, in the terminal's own code page, so
+the same byte is `é` on a French install and `й` on a Russian one.
+`decode_report_bytes` tried cp1251 and then latin-1; since cp1251 leaves one byte
+value undefined (0x98) where cp1252 leaves five, cp1251 won every contest and a
+Western report came back as `Bйnйfice` — which parses, and reads as nonsense.
+Found by running check 6 of `verify_on_terminal.py`, not by reading the code.
 
-**Where it lives.** `tester_report.py` — `decode_report_bytes`.
+**What it does now.** cp1252 is preferred only when both halves of the evidence
+agree: the cp1251 reading contains no run of two or more Cyrillic letters (real
+Cyrillic *words* mean a Cyrillic terminal), and every character where the two
+readings differ is a Cyrillic-block character on one side and a Western accent on
+the other. The decision is per document, not per character, because a lone `№`
+(byte 0xB9, cp1252's `™`) is normal in a Russian report and one ambiguous byte is
+not evidence of a Western page. Byte 0x98 is undefined in both tables and falls
+back to latin-1, which keeps every offset aligned with the file.
 
-**How to settle.** Read a report from a terminal whose symbol names or EA comments are
-Cyrillic, and one whose are accented Latin. If the Cyrillic-first order garbles Latin
-text, the order (or the detection) needs to change.
+**Where it lives.** `tester_report.py` — `decode_report_bytes` and
+`_western_reading_is_better`; check 6 of `verify_on_terminal.py` replays six
+samples including the ambiguous ones, and
+`tests/examples/test_tester_report.py::TestDecodeReportBytesCodePages` pins the
+behaviour.
 
----
+**Still worth doing.** Read one report from a non-English terminal — French or
+Russian — and check the accents and letters come back as written. The heuristic
+is tested against synthetic bytes; a real report is the only thing that can show
+a case neither table describes.
 
 ## 7. Wine discovery on Linux
 

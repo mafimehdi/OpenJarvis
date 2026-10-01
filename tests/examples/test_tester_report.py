@@ -3503,3 +3503,51 @@ class TestCheckForwardWithoutTradeCounts:
             _report("forward", profit_factor=1.6),
         )
         assert not any("thin-sample rule" in w for w in check.warnings)
+
+
+class TestDecodeReportBytesCodePages:
+    """ANSI reports: which code page did the terminal write in?
+
+    MT5 writes reports in its own ANSI code page, so the same byte is ``é`` on
+    a French install and ``й`` on a Russian one. cp1251 leaves a single byte
+    value undefined (0x98) where cp1252 leaves five, so cp1251 wins almost any
+    first-match contest — and a Western report used to come back as
+    ``Bйnйfice``, which parses but reads as nonsense. Switching on a guess is
+    worse than the disease, so the switch needs both halves of the evidence: no
+    Cyrillic *words* in the cp1251 reading, and every differing character a
+    Cyrillic-block character where cp1252 has a Western accent.
+    """
+
+    def test_a_western_report_is_not_read_as_cyrillic(self) -> None:
+        text = "Bénéfice 1 850,25; Symbole EURUSD"
+        assert tr.decode_report_bytes(text.encode("cp1252")) == text
+
+    def test_a_cyrillic_report_still_reads_as_cyrillic(self) -> None:
+        text = "Прибыль 1 850,25; Символ EURUSD"
+        assert tr.decode_report_bytes(text.encode("cp1251")) == text
+
+    def test_the_ambiguous_numero_sign_is_left_alone(self) -> None:
+        # 0xB9 is cp1251's numero sign and cp1252's trade mark. Russian reports
+        # use it, and one ambiguous byte is not evidence of a Western page.
+        text = "Custom: № 7"
+        assert tr.decode_report_bytes(text.encode("cp1251")) == text
+
+    def test_a_byte_cp1252_does_not_define_settles_it(self) -> None:
+        assert tr.decode_report_bytes(b"Profit \x81 1850.25") == "Profit Ѓ 1850.25"
+
+    def test_a_byte_neither_table_defines_falls_back_to_latin_1(self) -> None:
+        # latin-1 maps every byte 1:1, so a report with 0x98 in it still lines
+        # up with the file instead of losing a character.
+        assert tr.decode_report_bytes(b"Profit \x98 1850.25") == "Profit \x98 1850.25"
+
+    def test_the_decision_is_per_document_not_per_character(self) -> None:
+        # Cyrillic words plus an ambiguous byte: the document is Cyrillic, so
+        # the whole file stays on cp1251 rather than switching for one byte.
+        text = "Прибыль 1 850,25; № 7"
+        assert tr.decode_report_bytes(text.encode("cp1251")) == text
+
+    def test_utf8_utf16_and_ascii_paths_are_untouched(self) -> None:
+        text = "Bénéfice; Прибыль"
+        assert tr.decode_report_bytes(text.encode("utf-8")) == text
+        assert tr.decode_report_bytes(text.encode("utf-16")) == text
+        assert tr.decode_report_bytes(b"Profit 1850.25") == "Profit 1850.25"
