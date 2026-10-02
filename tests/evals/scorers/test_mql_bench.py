@@ -16,6 +16,7 @@ import pytest
 from openjarvis.evals.core.types import EvalRecord
 from openjarvis.evals.datasets.mql_bench import MQLBenchDataset
 from openjarvis.evals.scorers.mql_bench import (
+    MQL4_ISM_PATTERNS,
     MQLBenchScorer,
     extract_mql_source,
     find_mql4_isms,
@@ -150,6 +151,74 @@ double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 """
         )
         assert find_mql4_isms(code) == []
+
+    def test_member_access_on_a_user_struct_is_not_flagged(self) -> None:
+        """A dot in front means the author's own field, not an MQL4 global.
+
+        In MQL4 these names are predefined globals, so a genuine MQL4 answer
+        never has a dot before them — while a correct MQL5 answer can, because
+        a struct the author defined may well have a field called ``Bars`` or
+        ``Close``. Four of the nine patterns left ``.`` out of their
+        lookbehind, so the access was scored as an idiom and a correct answer
+        got zero.
+        """
+        code = strip_comments_and_strings(
+            """
+struct Snapshot { int Bars; double Point; double Close[]; };
+Snapshot s;
+int    bars  = s.Bars;
+double point = s.Point;
+double last  = s.Close[0];
+"""
+        )
+        hits = find_mql4_isms(code)
+        # The field declarations on line 2 still read as idioms — that is the
+        # pinned trade-off below — but not one access does.
+        assert hits, "the declarations should still be flagged"
+        assert all(hit["line"] == 2 for hit in hits), hits
+
+    def test_a_declaration_named_after_an_mql4_global_stays_flagged(self) -> None:
+        """The accepted trade-off, pinned so it stays a decision.
+
+        Telling ``struct Point {...}`` from a bare ``Point`` used as a value
+        needs declaration parsing, and in this domain both readings say the
+        same thing: the model is still thinking in MQL4. None of the twelve
+        reference answers does either.
+        """
+        declared = strip_comments_and_strings(
+            "struct Point { double x, y; };\nPoint p;"
+        )
+        assert any("Point/Digits" in hit["label"] for hit in find_mql4_isms(declared))
+        wrapper = strip_comments_and_strings(
+            "double AccountBalance() { return AccountInfoDouble(ACCOUNT_BALANCE); }"
+        )
+        assert any(
+            "account function" in hit["label"] for hit in find_mql4_isms(wrapper)
+        )
+
+    def test_every_pattern_excludes_a_preceding_dot(self) -> None:
+        """So the next pattern added cannot silently reintroduce it."""
+        for label, pattern in MQL4_ISM_PATTERNS:
+            assert "(?<![.\\w_])" in pattern, f"{label}: {pattern}"
+
+    def test_prose_about_mql4_costs_nothing_through_the_scorer(
+        self, scorer: MQLBenchScorer, records: dict[str, EvalRecord]
+    ) -> None:
+        """End to end, not just the helper: narrating a port is free.
+
+        A model porting an EA usually says what it replaced. Those comments
+        must not touch the safety score, and this pins the whole path —
+        extract, strip, scan — rather than the detector on its own.
+        """
+        task_id = next(iter(records))
+        record = records[task_id]
+        prose = (
+            "// MQL4 used Ask, Close[1] and an eleven-argument\n"
+            "// OrderSend(sym, cmd, vol, price, slippage, sl, tp, c, m, e, a).\n"
+        )
+        is_correct, meta = scorer.score(record, _fenced(prose + record.reference))
+        assert meta["mql4_ism_count"] == 0, meta["mql4_isms"]
+        assert is_correct is True
 
     def test_safety_floor_at_three_hits(
         self, scorer: MQLBenchScorer, records: dict[str, EvalRecord]

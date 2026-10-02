@@ -47,22 +47,28 @@ _SAFETY_PENALTY_PER_HIT = 1.0 / 3.0
 # MQL4-only idioms that must not appear in MQL5 code
 # ---------------------------------------------------------------------------
 
+# Every pattern's lookbehind excludes ``.`` as well as word characters. In MQL4
+# these names are predefined *globals*, so a correct MQL4 answer never has a dot
+# in front of them — while a correct MQL5 answer can, because ``s.Bars`` and
+# ``rates.Close[0]`` are ordinary member accesses on a struct the author
+# defined. Without the dot these read as MQL4-isms and a correct answer scores
+# zero, which is the one mistake a benchmark must not make.
 MQL4_ISM_PATTERNS: List[Tuple[str, str]] = [
     (
         "predefined Ask/Bid (use SymbolInfoDouble with SYMBOL_ASK/SYMBOL_BID)",
-        r"(?<![\w_])(Ask|Bid)(?![\w_])",
+        r"(?<![.\w_])(Ask|Bid)(?![\w_])",
     ),
     (
         "predefined Point/Digits (use _Point/_Digits)",
-        r"(?<![\w_])(Point|Digits)(?![\w_])",
+        r"(?<![.\w_])(Point|Digits)(?![\w_])",
     ),
     (
         "predefined Bars variable (use Bars(_Symbol, _Period))",
-        r"(?<![\w_])Bars(?![\w_(])",
+        r"(?<![.\w_])Bars(?![\w_(])",
     ),
     (
         "MQL4 series array (use iTime/iClose/CopyClose with ArraySetAsSeries)",
-        r"(?<![\w_])(Time|Open|High|Low|Close|Volume)\s*\[",
+        r"(?<![.\w_])(Time|Open|High|Low|Close|Volume)\s*\[",
     ),
     (
         "MQL4 order-pool function (positions and orders are separate in MQL5)",
@@ -83,7 +89,7 @@ MQL4_ISM_PATTERNS: List[Tuple[str, str]] = [
     ),
     (
         "MQL4 trade/market enum constant",
-        r"(?<![\w_])(OP_BUY|OP_SELL|OP_BUYLIMIT|OP_SELLLIMIT|OP_BUYSTOP|OP_SELLSTOP"
+        r"(?<![.\w_])(OP_BUY|OP_SELL|OP_BUYLIMIT|OP_SELLLIMIT|OP_BUYSTOP|OP_SELLSTOP"
         r"|MODE_SPREAD|MODE_ASK|MODE_BID|MODE_POINT|MODE_DIGITS|MODE_MINLOT"
         r"|MODE_MAXLOT|MODE_LOTSTEP|MODE_STOPLEVEL|MODE_FREEZELEVEL"
         r"|MODE_TICKVALUE|MODE_TICKSIZE|MODE_EXPIRATION)\b",
@@ -329,6 +335,14 @@ def find_mql4_isms(code: str) -> List[Dict[str, Any]]:
     Expects comment- and string-stripped source (see
     :func:`strip_comments_and_strings`) so that idioms mentioned in prose are
     not counted and so that offsets still map to original line numbers.
+
+    Two false positives are accepted on purpose, because in this domain both
+    are how a model shows it is still thinking in MQL4: a *type* the author
+    named ``Point`` or ``Bars`` (``struct Point {...}``, ``Point p;``), and a
+    function the author named after an MQL4 builtin (``double
+    AccountBalance() {...}``). Neither can be told from the real idiom without
+    parsing declarations, and both are pinned by tests so the choice stays
+    visible.
     """
     hits: List[Dict[str, Any]] = []
     for label, pattern in MQL4_ISM_PATTERNS:

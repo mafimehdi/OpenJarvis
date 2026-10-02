@@ -103,7 +103,14 @@ MQL4-isms are found, and the answer is non-empty. Comments and string literals a
 stripped with offsets preserved before scanning, so a doc comment mentioning
 `OrderSend` does not register as an MQL4-ism, and `OrderSend` arity is detected by
 counting top-level commas inside balanced parentheses so a model cannot dodge the
-check by renaming variables.
+check by renaming variables. Every pattern also refuses a preceding `.`, because
+`s.Bars` is a field on the author's own struct, not the MQL4 global — MQL4 never
+spells those with a dot, while MQL5 member access always does. The mirror case is
+accepted on purpose: a user type named `Point`, or a wrapper called
+`AccountBalance()`, is still reported, since separating either from a genuine idiom
+takes declaration parsing, and in this domain both readings say the same thing — the
+model is still thinking in MQL4. Each decision is pinned by a test, and all twelve
+reference answers pass their own benchmark.
 
 The skill ships as a hybrid: `SKILL.md` carries the checklist an agent injects into
 context, and `skill.toml` runs two deliberately JSON-safe steps (`file_read` →
