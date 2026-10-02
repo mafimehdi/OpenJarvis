@@ -18,7 +18,9 @@
 | فایل | کاربرد | مقصد |
 |---|---|---|
 | **`GF63_Fixes.mqh`** | ماژول اصلاحی — ۲۰ تابع، ۷۵۱ خط | `MQL4/Include/` |
-| **`GF63_Test.mq4`** | اکسپرت تشخیصی کامل (۴ تابع رویداد، بدون معامله) | `MQL4/Experts/` |
+| **`MF15.mq4`** | 🌟 **خودکفا — کد ماژول + هر ۴ تابع رویداد داخلش** | `MQL4/Experts/` |
+| **`GF63_Test.mq4`** | اکسپرت تشخیصی (نیازمند `GF63_Fixes.mqh` در Include) | `MQL4/Experts/` |
+| `HOW_TO_COMPILE.md` | رفع خطای `event handling function not found` | — |
 | **`GF63_Integration_Guide.md`** | نقشه جایگزینی + عیب‌یابی خطاهای کامپایل | — |
 | `GF63_Review_Findings.md` | یافته‌های تحلیل اسکرین‌شات با استناد به مراجع | — |
 | `verify_fixes.py` | شبیه‌سازی عددی اصلاحات | — |

@@ -116,7 +116,9 @@ void OnDeinit(const int reason)
 
    Print("╔══════════════════════════════════════════════════════════╗");
    PrintFormat("║  GF63 Test EA — پایان | دلیل: %d", reason);
-   PrintFormat("║  مدت اجرا      : %s", TimeToString(TimeCurrent() - g_startTime, TIME_MINUTES));
+   PrintFormat("║  مدت اجرا      : %d ساعت و %d دقیقه",
+                 (int)((TimeCurrent() - g_startTime) / 3600),
+                 (int)(((TimeCurrent() - g_startTime) % 3600) / 60));
    PrintFormat("║  تیک‌های پردازش‌شده: %d", g_tickCount);
    PrintFormat("║  ممیزی‌ها       : %d", g_auditCount);
    PrintFormat("║  بیشترین پوزیشن : %d", g_maxPositions);
