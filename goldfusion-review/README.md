@@ -15,12 +15,17 @@
 
 ## فایل‌ها
 
-| فایل | کاربرد |
-|---|---|
-| **`GF63_Fixes.mqh`** | ماژول اصلاحی — ۲۰ تابع، ۷۵۱ خط. در `MQL4/Include/` کپی کنید. |
-| **`GF63_Integration_Guide.md`** | نقشه جایگزینی: هر باگ با کد معیوب و کد اصلاح‌شده |
-| `GF63_Review_Findings.md` | یافته‌های تحلیل اسکرین‌شات با استناد به مراجع |
-| `verify_fixes.py` | شبیه‌سازی عددی اصلاحات (برای بازتولید اعداد) |
+| فایل | کاربرد | مقصد |
+|---|---|---|
+| **`GF63_Fixes.mqh`** | ماژول اصلاحی — ۲۰ تابع، ۷۵۱ خط | `MQL4/Include/` |
+| **`GF63_Test.mq4`** | اکسپرت تشخیصی کامل (۴ تابع رویداد، بدون معامله) | `MQL4/Experts/` |
+| **`GF63_Integration_Guide.md`** | نقشه جایگزینی + عیب‌یابی خطاهای کامپایل | — |
+| `GF63_Review_Findings.md` | یافته‌های تحلیل اسکرین‌شات با استناد به مراجع | — |
+| `verify_fixes.py` | شبیه‌سازی عددی اصلاحات | — |
+
+> ⚠ `GF63_Fixes.mqh` یک فایل **include** است و به‌تنهایی کامپایل **نمی‌شود**.
+> خطای `event handling function not found` یعنی همین. برای تست مستقل از
+> `GF63_Test.mq4` استفاده کنید.
 
 ---
 
@@ -70,15 +75,36 @@ ATR(14) طلا M15 ≈ 5.00
 
 ## نصب سریع
 
+**الف) تست مستقل ماژول (پیشنهادی برای شروع)**
+
 ```
 ۱. GF63_Fixes.mqh  →  MQL4/Include/
-۲. در اکسپرت:       #include <GF63_Fixes.mqh>
-۳. در OnInit():     GF_SelfTest();
+۲. GF63_Test.mq4   →  MQL4/Experts/
+۳. F7 روی GF63_Test.mq4 — باید بدون خطا کامپایل شود
+۴. روی چارت XAUUSD M15 بیندازید
+```
+
+**ب) اعمال روی اکسپرت اصلی**
+
+```
+۱. GF63_Fixes.mqh  →  MQL4/Include/
+۲. در اکسپرت GoldFusion:  #include <GF63_Fixes.mqh>
+۳. در OnInit() موجود:     GF_SelfTest();
 ۴. طبق راهنما هشت مورد را جایگزین کنید
 ۵. بک‌تست با Every tick + اسپرد واقعی
 ```
 
 جزئیات کامل: `GF63_Integration_Guide.md`
+
+## خطاهای کامپایل
+
+| خطا | راه‌حل |
+|---|---|
+| `event handling function not found` | `.mqh` به‌تنهایی کامپایل نمی‌شود — از `GF63_Test.mq4` استفاده کنید یا داخل اکسپرت `#include` کنید |
+| `'GF_XXX' - function not defined` | `GF63_Fixes.mqh` در `MQL4/Include/` نیست |
+| `'OnInit' - function already defined` | کد را **داخل** `OnInit` موجود بگذارید، نه یک `OnInit` جدید |
+
+بخش کامل عیب‌یابی: پایان `GF63_Integration_Guide.md`
 
 ---
 
