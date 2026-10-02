@@ -63,17 +63,20 @@ input bool BE_RetreatNoWorseThanEntry=true;
 input bool UseBreakEven=true;
 input double BE_TriggerUSD=0.4;
 input int BE_Extra_Points=20;
-// [v6.4] ATR floor for the BE trigger - 0 disables (v6.3 behavior)
-input double BE_MinATRMult=1.0;
+// [v6.4b] ATR floor for the BE trigger - DEFAULT 0 = exact v6.3 behavior.
+// Only enable with a large TP (e.g. TP>=50$): the floor must stay well
+// below the TP distance or BE will never trigger at all.
+input double BE_MinATRMult=0.0;
 input bool UseBE_Retreat=false;
 input ENUM_RETREAT_MODE BE_RetreatMode=RETREAT_FULL_RESET;
 input double BE_RetreatDistUSD=2.0;
 input bool UseTrailing=true;
 input double TrailStartUSD=1.0;
 input double TrailDistUSD=1.0;
-// [v6.4] ATR floors for trail start/distance - 0 disables (v6.3 behavior)
-input double TrailStart_MinATRMult=1.5;
-input double TrailDist_MinATRMult=1.5;
+// [v6.4b] ATR floors for trail start/distance - DEFAULT 0 = exact v6.3
+// behavior. Same warning as BE_MinATRMult: keep below the TP distance.
+input double TrailStart_MinATRMult=0.0;
+input double TrailDist_MinATRMult=0.0;
 input double MaxDailyLossUSD=0.0;
 input int MaxTradesPerDay=0;
 // [v6.4] was 50; a blocked signal is now queued, not discarded
@@ -805,6 +808,22 @@ int OnInit()
    // [v6.4] validate the new inputs
    if(EntryRetrySeconds<0 || BE_MinATRMult<0 || TrailStart_MinATRMult<0 || TrailDist_MinATRMult<0)
    { Print("[!] EntryRetrySeconds and exit-floor ATR mults must be >= 0."); return(INIT_PARAMETERS_INCORRECT); }
+   // [v6.4b] guard: an exit floor >= TP distance silently disables BE/trail
+   // entirely and leaves every position naked to the full SL (account killer).
+   {
+      double upuG=DollarsPerPriceUnit(NormalizeLot(FixedLot));
+      if(upuG>0 && RewardUSD>0)
+      {
+         double beF=ExitFloorUSD(BE_TriggerUSD,BE_MinATRMult,upuG);
+         double trF=ExitFloorUSD(TrailStartUSD,TrailStart_MinATRMult,upuG);
+         if(BE_MinATRMult>0 && beF>=RewardUSD)
+            Print("[!] WARNING: BE floor ",DoubleToString(beF,2),"$ >= TP ",DoubleToString(RewardUSD,2),
+                  "$ -> BE would NEVER trigger. Lower BE_MinATRMult or set it to 0.");
+         if(TrailStart_MinATRMult>0 && trF>=RewardUSD)
+            Print("[!] WARNING: TrailStart floor ",DoubleToString(trF,2),"$ >= TP ",DoubleToString(RewardUSD,2),
+                  "$ -> trail would NEVER trigger. Lower TrailStart_MinATRMult or set it to 0.");
+      }
+   }
    string su=_Symbol; StringToUpper(su);
    if(StringFind(su,"XAU")<0 && StringFind(su,"GOLD")<0) Print("[!] WARNING: GoldFusion is tuned for gold; current symbol is ",_Symbol);
    if(Period()!=PERIOD_M15 && Period()!=PERIOD_M5)
@@ -817,9 +836,9 @@ int OnInit()
          " | USD SL base=",(UseFixedDollarStop ? DoubleToString(RiskUSD,2)+"$" : "off"),
          " | ATR SL floor=",(UseATRStopFloor ? "x"+DoubleToString(ATRStopMult,1) : "off"),
          " | TP=",DoubleToString(RewardUSD,2),"$",(upu>0 ? " (= "+DoubleToString(RewardUSD/upu,_Digits)+" price)" : ""),
-         " | BE@",(UseBreakEven ? DoubleToString(ExitFloorUSD(BE_TriggerUSD,BE_MinATRMult,upu),2)+"$ (ATR-floored)" : "off"),
+         " | BE@",(UseBreakEven ? DoubleToString(ExitFloorUSD(BE_TriggerUSD,BE_MinATRMult,upu),2)+"$ (effective)" : "off"),
          " | Trail from ",(UseTrailing ? DoubleToString(ExitFloorUSD(TrailStartUSD,TrailStart_MinATRMult,upu),2)+"$ dist "+
-                                       DoubleToString(ExitFloorUSD(TrailDistUSD,TrailDist_MinATRMult,upu),2)+"$ (ATR-floored)" : "off"),
+                                       DoubleToString(ExitFloorUSD(TrailDistUSD,TrailDist_MinATRMult,upu),2)+"$ (effective)" : "off"),
          " | MaxOpen=",MathMax(1,MaxOpenTrades)," | PerSignal=",TradesPerSignal,
          " | Reversal=",(UseReversal ? EnumToString(ReversalPrimary) : "off"),
          " | EntryQueue=",EntryRetrySeconds,"s | MaxSpread=",MaxSpreadPoints,"pts");
