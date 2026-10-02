@@ -1,20 +1,23 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| GoldFusion_v6.4.mq4                                              |
-//| نسخهٔ اصلاح‌شدهٔ GoldFusion_EA_v2 (v6.3) — XAUUSD M15/M5          |
+//| Fixed version of GoldFusion_EA_v2 (v6.3) - XAUUSD M15/M5         |
 //|                                                                  |
-//| تغییرات v6.4 نسبت به v6.3 (منطق سیگنال‌ها دست‌نخورده):            |
-//|  1) صف ورود (Entry Queue): اگر اسپرد/کانتکست مانع ورود شد،        |
-//|     سیگنال تا EntryRetrySeconds ثانیه در همان بار حفظ می‌شود      |
-//|     و در هر تیک دوباره تلاش می‌شود ← رفع «دیر وارد شدن» در لایو.  |
-//|  2) کف ATR برای نردبان خروج: فعال‌سازی BE، شروع تریل و فاصلهٔ      |
-//|     تریل دیگر نمی‌تواند کوچک‌تر از ضریبی از ATR باشد ← رفع        |
-//|     خفگی سود (عامل اصلی ضررهای ذره‌ای در لایو).                   |
-//|  3) MaxSpreadPoints پیش‌فرض 50→80 (اسپرد لحظه‌ای Alpari 35-47).   |
-//|  4) SL-cooldown فقط بعد از ضرر واقعی (≥ ۵۰٪ RiskUSD)، نه بعد     |
-//|     از ضررهای ذره‌ایِ پس از BE.                                    |
-//|  5) لاگ ورود: اسپرد لحظه‌ای هنگام پر شدن سفارش.                   |
-//|  6) پنل: نمایش ATR، کف‌های مؤثر خروج و وضعیت صف ورود.             |
-//|  7) throttle روی لاگِ Trade-context-busy (ضد سرریز لاگ در صف).     |
+//| Changes vs v6.3 (signal logic untouched):                        |
+//|  1) Entry queue: if spread/trade-context blocks an entry, the    |
+//|     signal is kept for EntryRetrySeconds within the same bar     |
+//|     and retried every tick -> fixes "enters late in live".       |
+//|  2) ATR floor for the exit ladder: BE trigger, trail start and   |
+//|     trail distance can no longer be smaller than a multiple of   |
+//|     ATR -> fixes profit strangulation (main cause of tiny live   |
+//|     losses). Set the mults to 0 to restore v6.3 behavior.        |
+//|  3) MaxSpreadPoints default 50->80 (Alpari live spread 35-47).   |
+//|  4) SL-cooldown only after a real loss (>= 50% of RiskUSD).      |
+//|  5) Entry log now includes spread at fill time.                  |
+//|  6) Panel shows ATR, effective exit floors and queue status.     |
+//|  7) Trade-context-busy logging throttled.                        |
+//|                                                                  |
+//| ENCODING NOTE: this file is pure ASCII with no BOM on purpose.   |
+//| Paste it into MetaEditor and save from MetaEditor itself.        |
 //+------------------------------------------------------------------+
 #property strict
 #property description "GoldFusion EA v6.4 - entry queue + ATR-floored exit ladder (based on v6.3)"
@@ -60,7 +63,7 @@ input bool BE_RetreatNoWorseThanEntry=true;
 input bool UseBreakEven=true;
 input double BE_TriggerUSD=0.4;
 input int BE_Extra_Points=20;
-// [v6.4] کف ATR برای فعال‌سازی BE — صفر = غیرفعال (رفتار v6.3)
+// [v6.4] ATR floor for the BE trigger - 0 disables (v6.3 behavior)
 input double BE_MinATRMult=1.0;
 input bool UseBE_Retreat=false;
 input ENUM_RETREAT_MODE BE_RetreatMode=RETREAT_FULL_RESET;
@@ -68,14 +71,14 @@ input double BE_RetreatDistUSD=2.0;
 input bool UseTrailing=true;
 input double TrailStartUSD=1.0;
 input double TrailDistUSD=1.0;
-// [v6.4] کف‌های ATR برای شروع/فاصلهٔ تریل — صفر = غیرفعال (رفتار v6.3)
+// [v6.4] ATR floors for trail start/distance - 0 disables (v6.3 behavior)
 input double TrailStart_MinATRMult=1.5;
 input double TrailDist_MinATRMult=1.5;
 input double MaxDailyLossUSD=0.0;
 input int MaxTradesPerDay=0;
-// [v6.4] 50→80 و دیگر «حذف‌کنندهٔ» سیگنال نیست؛ صف ورود جبران می‌کند
+// [v6.4] was 50; a blocked signal is now queued, not discarded
 input int MaxSpreadPoints=80;
-// [v6.4] مهلت تلاش مجدد ورود در همان بارِ سیگنال (ثانیه) — صفر = رفتار v6.3
+// [v6.4] retry window for a blocked entry within its signal bar - 0 = v6.3 behavior
 input int EntryRetrySeconds=90;
 input bool AllowLong=true;
 input bool AllowShort=true;
@@ -97,9 +100,9 @@ input int Slippage=30;
 #define ENGINE_PB 0
 #define ENGINE_SP2L 1
 #define MAX_TRACKED 64
-#define OPEN_OK 1      // [v6.4] سفارش باز شد
-#define OPEN_SOFT 0    // [v6.4] مانع موقت (اسپرد/کانتکست/ری‌کوت) — قابل تلاش مجدد
-#define OPEN_HARD (-1) // [v6.4] مانع دائمی (پارامتر/مارجین/جهت) — تلاش مجدد بی‌فایده
+#define OPEN_OK 1      // [v6.4] order opened
+#define OPEN_SOFT 0    // [v6.4] temporary block (spread/context/requote) - retry makes sense
+#define OPEN_HARD (-1) // [v6.4] permanent block (params/margin/direction) - do not retry
 datetime g_lastBarTime=0;
 int g_barIndex=0, g_slHitBar=-1;
 double g_utStop=0.0;
@@ -112,7 +115,7 @@ double g_profitDollar=0.0;
 int g_entriesToday=0;
 double g_dayStartEquity=0.0;
 int g_tradesPB=0, g_winsPB=0, g_tradesSP=0, g_winsSP=0;
-// [v6.4] وضعیت صف ورود
+// [v6.4] entry queue state
 int g_sigDir=0, g_sigEngine=0, g_sigWant=0;
 datetime g_sigBar=0, g_sigExpire=0;
 
@@ -225,7 +228,7 @@ bool InSession()
    if(startH<endH) return(h>=startH && h<endH);
    return(h>=startH || h<endH);
 }
-// [v6.4] لاگ‌ها throttle شدند تا حالت صف (تلاش هر تیک) لاگ را پر نکند
+// [v6.4] logging throttled so queue retries do not flood the log
 bool TradingAllowed()
 {
    static datetime lastLog=0;
@@ -282,8 +285,8 @@ void CloseAllMyPositions()
       }
    }
 }
-// [v6.4] مقدار مؤثر خروج = max(مقدار دلاری ورودی, ضریب × ATR بر حسب دلار)
-// upu = دلار به‌ازای هر یک واحد قیمت برای حجمِ مربوطه
+// [v6.4] effective exit value = max(input dollar value, mult x ATR in dollars)
+// upu = dollars per one price unit for the given lot
 double ExitFloorUSD(double usdVal,double atrMult,double upu)
 {
    if(atrMult<=0 || upu<=0) return(usdVal);
@@ -302,9 +305,9 @@ void ManageOneOrder(int ticket)
    bool trailOn=ListContains(g_trailTickets,g_trailCount,ticket);
    double dist=(BE_RetreatDistUSD>0) ? BE_RetreatDistUSD : RiskUSD;
    if(dist>RiskUSD) dist=RiskUSD;
-   // [v6.4] کف‌های ATR — بدون اینها BE@0.4$ و تریل 1$ روی طلایی با ATR≈7$
-   // هر برنده را در چند ثانیه به 0.2$ خفه می‌کنند (مطابق لاگ لایو)
-   double beTrig =ExitFloorUSD(BE_TriggerUSD ,BE_MinATRMult      ,upu);
+   // [v6.4] ATR floors - without them BE@0.4$ and a 1$ trail on gold with
+   // ATR around 7$ strangle every winner within seconds (see live log)
+   double beTrig =ExitFloorUSD(BE_TriggerUSD ,BE_MinATRMult       ,upu);
    double trStart=ExitFloorUSD(TrailStartUSD ,TrailStart_MinATRMult,upu);
    double trDist =ExitFloorUSD(TrailDistUSD  ,TrailDist_MinATRMult ,upu);
    if(OrderType()==OP_BUY)
@@ -559,8 +562,8 @@ bool ReversalConfirmed(int dir,int pbVote,int spVote)
    return(true);
 }
 // Closing is independent of session, spread, free slots and daily entry brakes.
-// [v6.4] هر بار که معکوس‌شدن تأیید شود، ورود همان بارskip می‌شود (بستن‌ها
-// در بار بعد دوباره تلاش می‌شوند) — همان رفتار v6.3، با توضیح درست.
+// [v6.4] whenever a reversal is confirmed, entry is skipped for that bar
+// (failed closes are retried on the next bar) - same as v6.3 behavior.
 bool CloseReversedPositions(bool closeBuys,bool closeSells)
 {
    bool closed=false;
@@ -582,7 +585,7 @@ bool CloseReversedPositions(bool closeBuys,bool closeSells)
    }
    return(closed);
 }
-// [v6.4] OpenSingleTrade → TryOpenSingle: خروجی کد وضعیت برای صف ورود
+// [v6.4] OpenSingleTrade -> TryOpenSingle: returns a status code for the entry queue
 int TryOpenSingle(int direction,int engine,int seq,int total)
 {
    if(direction>0 && !AllowLong) return(OPEN_HARD);
@@ -596,7 +599,7 @@ int TryOpenSingle(int direction,int engine,int seq,int total)
    if(MaxSpreadPoints>0)
    {
       int spr=(int)MarketInfo(_Symbol,MODE_SPREAD);
-      if(spr>MaxSpreadPoints) return(OPEN_SOFT); // [v6.4] صف می‌شود، حذف نمی‌شود
+      if(spr>MaxSpreadPoints) return(OPEN_SOFT); // [v6.4] queued, not discarded
    }
    double lot=NormalizeLot(FixedLot), upu=DollarsPerPriceUnit(lot);
    if(upu<=0) { Print("[!] Tick value unavailable, entry skipped."); return(OPEN_SOFT); }
@@ -625,7 +628,7 @@ int TryOpenSingle(int direction,int engine,int seq,int total)
       if(ticket>0)
       {
          g_entriesToday++; ListAdd(g_knownTickets,g_knownCount,ticket);
-         // [v6.4] اسپرد لحظه‌ای پر شدن هم لاگ می‌شود (سنجش «دیر وارد شدن»)
+         // [v6.4] log the spread at fill time too (to measure late entries)
          Print("[SIGNAL ",seq,"/",total,"] engine=",(engine==ENGINE_SP2L ? "SP2L" : "PB")," dir=",direction,
                " ticket=",ticket," lot=",DoubleToString(lot,2)," SL=",DoubleToString(RiskUSD,2),
                "$ (",DoubleToString(slDist,_Digits)," price) TP=",DoubleToString(RewardUSD,2),
@@ -636,9 +639,9 @@ int TryOpenSingle(int direction,int engine,int seq,int total)
       Print("[X] OrderSend attempt ",attempt+1," failed: ",GetLastError());
       if(attempt<2) Sleep(100);
    }
-   return(OPEN_SOFT); // [v6.4] ری‌کوت/خطای موقت بازار — از طریق صف دوباره تلاش می‌شود
+   return(OPEN_SOFT); // [v6.4] requote/temporary market error - the queue retries
 }
-// [v6.4] OpenTrades → OpenBatch: تعداد بازشده + آیا مانع موقت بود
+// [v6.4] OpenTrades -> OpenBatch: returns opened count + whether a soft block occurred
 int OpenBatch(int direction,int engine,int count,bool &softBlocked)
 {
    softBlocked=false;
@@ -654,14 +657,14 @@ int OpenBatch(int direction,int engine,int count,bool &softBlocked)
    }
    return(opened);
 }
-// [v6.4] صف ورود: سیگنالِ مانع‌شده را تا پایان بار/مهلت نگه می‌دارد
+// [v6.4] entry queue: keeps a blocked signal alive until bar end / timeout
 void ArmSignal(int dir,int engine,int wantLeft)
 {
    if(EntryRetrySeconds<=0 || wantLeft<=0) return;
    g_sigDir=dir; g_sigEngine=engine; g_sigWant=wantLeft;
    g_sigBar=Time[0]; g_sigExpire=TimeCurrent()+EntryRetrySeconds;
    Print("[QUEUE] ",(dir>0?"BUY":"SELL")," x",wantLeft," armed (",(engine==ENGINE_SP2L?"SP2L":"PB"),
-         ") — retrying for up to ",EntryRetrySeconds,"s");
+         ") - retrying for up to ",EntryRetrySeconds,"s");
 }
 void DisarmSignal(string reason)
 {
@@ -704,8 +707,8 @@ void TrackClosedOrders()
          else if(p<0)
          {
             g_losses++;
-            // [v6.4] cooldown فقط برای ضرر واقعی؛ ضرر ذره‌ایِ بعد از BE دیگر
-            // بارِ بعدی را نمی‌سوزاند
+            // [v6.4] cooldown only for real losses; a tiny post-BE loss no
+            // longer burns the next bar
             double lossThresh=(RiskUSD>0) ? RiskUSD*0.5 : 0.0;
             if(lossThresh<=0 || MathAbs(p)>=lossThresh) g_slHitBar=g_barIndex;
          }
@@ -763,7 +766,7 @@ void ShowStats()
    }
    if(UseTrailing) exits+="| Trail from "+DoubleToString(trSEff,2)+"$, dist "+DoubleToString(trDEff,2)+"$";
    if(exits!="") s+="\n"+exits;
-   // [v6.4] شفافیت کف‌های خروج و وضعیت صف
+   // [v6.4] exit-floor transparency and queue status
    double atrNow=SafeATR(ATR_Period,1);
    string fl="ATR("+IntegerToString(ATR_Period)+")="+DoubleToString(atrNow,_Digits)+" -> floors: ";
    fl+=(UseBreakEven ? "BE>=$"+DoubleToString(beEff,2) : "BE off");
@@ -799,7 +802,7 @@ int OnInit()
       Print("[!] ReversalPrimary must be enabled by SignalMode.");
       return(INIT_PARAMETERS_INCORRECT);
    }
-   // [v6.4] اعتبارسنجی ورودی‌های جدید
+   // [v6.4] validate the new inputs
    if(EntryRetrySeconds<0 || BE_MinATRMult<0 || TrailStart_MinATRMult<0 || TrailDist_MinATRMult<0)
    { Print("[!] EntryRetrySeconds and exit-floor ATR mults must be >= 0."); return(INIT_PARAMETERS_INCORRECT); }
    string su=_Symbol; StringToUpper(su);
@@ -836,7 +839,7 @@ void OnTick()
    { CloseAllMyPositions(); DisarmSignal("session close"); ShowStats(); return; }
    int openNow=CountMyOrders();
    if(openNow>0) ManageAllPositions();
-   // [v6.4] تلاش مجدد ورودِ در صف — در تمام تیک‌های همان بارِ سیگنال
+   // [v6.4] retry a queued entry on every tick of the signal bar
    if(!newBar) TryArmedEntry();
    if(!newBar) { ShowStats(); return; }
    if(Bars<TrendEMA+PullbackValidBars+SP2L_SpikeBars+SP2L_MaxLegBars+5)
@@ -872,7 +875,7 @@ void OnTick()
          if(opened>0)
             Print("[BATCH] ",opened,"/",want," trade(s) opened for one ",(engine==ENGINE_SP2L ? "SP2L" : "PB")," signal");
          int left=want-opened;
-         if(left>0 && soft) ArmSignal(dir,engine,left); // [v6.4] مانع موقت → صف
+         if(left>0 && soft) ArmSignal(dir,engine,left); // [v6.4] soft block -> queue
       }
    }
    ShowStats();
