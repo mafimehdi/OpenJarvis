@@ -1930,6 +1930,37 @@ class TestOptimizationAnalysis:
         assert analysis["plateau"]["near_best"] == 1
         assert any("within 10%" in warning for warning in analysis["warnings"])
 
+    def test_a_rank_metric_no_pass_carries_is_not_a_ranking(self) -> None:
+        """``best`` must not be file order wearing a winner's label.
+
+        A genetic optimization's rows are the order passes were *tried*, so when
+        no pass carries the rank metric the first row is not the best one — here
+        it is the worst result in the table, and the analysis used to present it
+        as the winner without a word.
+        """
+        rows = [_pass_cells(number, result=10000.0 + number) for number in range(1, 25)]
+        analysis = tr.analyze_optimization(
+            tr.parse_optimization_text(optimization_xml(rows)), rank_by="z_score"
+        )
+
+        assert analysis["best"]["pass"] == 1
+        assert any("nothing was ranked" in w for w in analysis["warnings"])
+        assert any("file order" in w for w in analysis["warnings"])
+
+    def test_a_best_pass_with_no_trade_count_says_the_rule_could_not_run(
+        self,
+    ) -> None:
+        """An absent trade count is not a cleared thin-sample check."""
+        rows = [_pass_cells(number) for number in range(1, 25)]
+        rows.append(_pass_cells(25, result=99000.0, trades=""))
+        analysis = tr.analyze_optimization(
+            tr.parse_optimization_text(optimization_xml(rows))
+        )
+
+        assert analysis["best"]["pass"] == 25
+        assert any("no trade count" in w for w in analysis["warnings"])
+        assert not any("time(s)" in w for w in analysis["warnings"])
+
     def test_a_plateau_does_not_warn(self) -> None:
         rows = [_pass_cells(number, result=11000.0 + number) for number in range(1, 31)]
         analysis = tr.analyze_optimization(
@@ -2076,6 +2107,65 @@ class TestForwardAnalysis:
                 )
             )
         return rows
+
+    @staticmethod
+    def _thin_forward_rows(*, paired: int) -> List[Tuple[str, ...]]:
+        """Twelve passes, of which only the first ``paired`` have a forward half.
+
+        Every paired pass loses 60% out of sample, so the median degradation is
+        the same whatever the sample size — only the sample size changes.
+        """
+        rows: List[Tuple[str, ...]] = []
+        for index in range(12):
+            back = 20000.0 - index * 1000.0
+            forward = str(round(back * 0.4, 2)) if index < paired else ""
+            rows.append(
+                (
+                    str(index + 1),
+                    str(back),
+                    forward,
+                    str(round(forward and float(forward) - 10000.0 or 0.0, 2)),
+                    "5",
+                    "1.4",
+                    "2.5",
+                    "1.1",
+                    "0",
+                    "9",
+                    "200",
+                    str(10 + index),
+                )
+            )
+        return rows
+
+    def test_one_paired_pass_does_not_make_a_forward_verdict(self) -> None:
+        result = tr.parse_optimization_text(
+            optimization_xml(self._thin_forward_rows(paired=1), FORWARD_HEADER)
+        )
+
+        analysis = tr.analyze_optimization(result, rank_by="back_result")
+
+        assert analysis["forward"]["passes"] == 1
+        # The number is still reported — it describes that pass — but it does
+        # not get to become a sentence about the run.
+        assert analysis["forward"]["median_degradation_pct"] == 60.0
+        assert any(
+            "carry both a back and a forward result" in w for w in analysis["warnings"]
+        )
+        assert not any("out of sample the median" in w for w in analysis["warnings"])
+
+    def test_enough_paired_passes_still_earn_the_forward_warning(self) -> None:
+        result = tr.parse_optimization_text(
+            optimization_xml(self._thin_forward_rows(paired=6), FORWARD_HEADER)
+        )
+
+        analysis = tr.analyze_optimization(result, rank_by="back_result")
+
+        assert analysis["forward"]["passes"] == 6
+        assert analysis["forward"]["median_degradation_pct"] == 60.0
+        assert any("out of sample the median" in w for w in analysis["warnings"])
+        assert not any(
+            "carry both a back and a forward result" in w for w in analysis["warnings"]
+        )
 
     def test_agreeing_ranks_do_not_warn(self) -> None:
         result = tr.parse_optimization_text(
@@ -2310,6 +2400,44 @@ class TestSetFromPass:
         )
         assert "InpFastEMA=5||5||1||30||Y" in generated.to_text()
         assert generated.total_combinations() == 26 * 9 * 17 * 2
+
+    def test_a_value_the_range_could_not_produce_is_flagged(self) -> None:
+        """The winner's input lies outside the grid that was supposed to find it.
+
+        Either the ``.set`` was edited after the optimization ran, or that report
+        column is not this input. The value is still written as reported — the
+        report is the evidence — but it does not go out unremarked.
+        """
+        result = tr.parse_optimization_text(optimization_xml([_pass_cells(1, fast=44)]))
+
+        generated = tr.set_from_pass(
+            result.passes[0], template=tr.parse_set_text(SET_TEXT)
+        )
+
+        assert generated.get("InpFastEMA").value == "44"
+        assert any(
+            "outside the template's range 5..30" in w for w in generated.warnings
+        )
+
+    def test_keep_ranges_says_the_search_would_not_cover_the_value(self) -> None:
+        result = tr.parse_optimization_text(optimization_xml([_pass_cells(1, fast=44)]))
+
+        generated = tr.set_from_pass(
+            result.passes[0], template=tr.parse_set_text(SET_TEXT), keep_ranges=True
+        )
+
+        # A line that contradicts itself, written exactly as the evidence has it.
+        assert "InpFastEMA=44||5||1||30||Y" in generated.to_text()
+        assert any("would not even cover it" in w for w in generated.warnings)
+
+    def test_a_value_inside_the_range_is_not_flagged(self) -> None:
+        result = tr.parse_optimization_text(optimization_xml([_pass_cells(1, fast=12)]))
+
+        generated = tr.set_from_pass(
+            result.passes[0], template=tr.parse_set_text(SET_TEXT)
+        )
+
+        assert not any("outside the template" in w for w in generated.warnings)
 
     def test_an_input_the_template_does_not_know_is_added(self) -> None:
         header = OPT_HEADER[:10] + ("InpNewThing",)

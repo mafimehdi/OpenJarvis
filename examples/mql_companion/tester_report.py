@@ -2401,6 +2401,12 @@ def rank_passes(
     return ordered
 
 
+#: How many passes must carry both halves before a forward *median* is allowed
+#: to become a sentence. The rank-correlation rule already asks for ten; a
+#: median over one or two passes is a description of those passes, not of the run.
+_MIN_FORWARD_PAIRS = 5
+
+
 def analyze_optimization(
     result: OptimizationResult,
     *,
@@ -2456,6 +2462,20 @@ def analyze_optimization(
             "has barely searched the space"
         )
 
+    if population and not any(
+        isinstance(item.metrics.get(metric_key), (int, float)) for item in population
+    ):
+        # rank_passes puts a missing metric last, so with no pass carrying it
+        # the "ranking" is file order — and a genetic optimization's file order
+        # is the order passes were tried, not the order they scored. Presenting
+        # the first row as the winner is a confident wrong answer.
+        warnings.append(
+            f"no pass in this report carries {rank_by!r}, so nothing was ranked: "
+            f'"best" is pass {best.number} in file order, which for a genetic '
+            "optimization is the order the passes were tried, not the order they "
+            "scored"
+        )
+
     if best is not None:
         trades = best.metrics.get("trades")
         if isinstance(trades, (int, float)) and trades < min_pass_trades:
@@ -2463,6 +2483,14 @@ def analyze_optimization(
                 f"the best pass traded {trades:g} time(s) — every ratio in that "
                 f"row (profit factor, Sharpe, recovery) is noise below about "
                 f"{min_pass_trades:g} trades"
+            )
+        elif trades is None:
+            # Same shape as the forward check's wording: an absent value means
+            # the rule could not run, not that the pass cleared it.
+            warnings.append(
+                "the best pass reports no trade count, so the thin-sample rule "
+                "could not be applied — a strong ratio over an unknown number of "
+                "trades is weaker evidence than it looks"
             )
 
     # A spike where the winner is many times the median of its neighbours is
@@ -2582,6 +2610,12 @@ def analyze_optimization(
             if isinstance(item.metrics.get("back_result"), (int, float))
             and isinstance(item.metrics.get("forward_result"), (int, float))
         ]
+        if paired and len(paired) < _MIN_FORWARD_PAIRS:
+            warnings.append(
+                f"only {len(paired)} pass(es) carry both a back and a forward "
+                "result — too few to say whether the in-sample ranking holds, so "
+                "the forward figures describe those passes and not the run"
+            )
         if paired:
             backs = [float(item.metrics["back_result"]) for item in paired]
             forwards = [float(item.metrics["forward_result"]) for item in paired]
@@ -2600,7 +2634,7 @@ def analyze_optimization(
                 if median_back > 0 and median_forward < median_back:
                     loss = (median_back - median_forward) / abs(median_back)
                     forward["median_degradation_pct"] = round(loss * 100.0, 2)
-                    if loss >= 0.5:
+                    if loss >= 0.5 and len(paired) >= _MIN_FORWARD_PAIRS:
                         warnings.append(
                             f"out of sample the median result falls from "
                             f"{median_back:g} to {median_forward:g} "
@@ -3169,7 +3203,34 @@ def set_from_pass(
     for existing in template.inputs:
         if existing.name in pairs:
             seen.add(existing.name)
-            value = _format_set_value(pairs[existing.name])
+            raw_value = pairs[existing.name]
+            value = _format_set_value(raw_value)
+            number = (
+                float(raw_value)
+                if isinstance(raw_value, (int, float))
+                else normalize_number(value)
+            )
+            start, _step, stop = existing.range_numbers
+            if (
+                existing.optimize
+                and number is not None
+                and start is not None
+                and stop is not None
+                and not min(start, stop) <= number <= max(start, stop)
+            ):
+                set_file.warnings.append(
+                    f"{existing.name}={value} from the pass lies outside the "
+                    f"template's range {start:g}..{stop:g} — either the .set was "
+                    "edited after the optimization ran, or that report column is "
+                    "not this input. The value is written as reported, but this "
+                    "range could not have produced it"
+                    + (
+                        ", and with keep_ranges the follow-up search would not "
+                        "even cover it"
+                        if keep_ranges
+                        else ""
+                    )
+                )
         else:
             value = existing.value
             set_file.warnings.append(

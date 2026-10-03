@@ -516,10 +516,11 @@ to fit the page; the tool prints each pass on one line). Read it and the verdict
 win was never tested beyond 9, and the pass that wins on recovery factor is a different
 one*. Those three facts are what the sorted table does not say.
 
-Five signals, each answering a question a sorted table cannot:
+Seven signals, each answering a question a sorted table cannot:
 
 - **Too few trades on the winner.** A profit factor computed over 12 trades is
-  noise, however large it is.
+  noise, however large it is. A winner whose trade count the report does not
+  carry is named too: an absent count is not a cleared check.
 - **Spike instead of plateau.** If the best pass is many times the median of the
   passes around it, it found one lucky stretch of history. A robust region has
   neighbours that also work.
@@ -529,11 +530,19 @@ Five signals, each answering a question a sorted table cannot:
   check needs the ranges, so pass the `.set` the optimization ran from.
 - **Criterion mismatch.** The pass that wins on `Result` is often not the one
   that wins on recovery factor or Sharpe; the note names both.
+- **A ranking nobody could rank.** Rank by a column the report does not carry and
+  every pass sorts as "missing", so `best` becomes the first row in file order —
+  which for a genetic optimization is the order the passes were *tried*, not the
+  order they scored. The analysis says so instead of handing that row over as the
+  winner.
 - **Forward degradation.** With `--forward-mode` the terminal re-runs the best
   in-sample passes on the part of the period it was not allowed to see, and the
   report gains `Back Result` and `Forward Result` columns. The analysis compares
   their medians and rank-correlates them (Spearman), because an in-sample
-  ranking that does not predict the out-of-sample one is a ranking of noise.
+  ranking that does not predict the out-of-sample one is a ranking of noise. The
+  median only becomes a sentence once at least five passes carry both halves;
+  below that the figures are reported and the sample is named as too thin,
+  because a median over one pair describes one pass and not a run.
 
 ### `.set` files: the part that fails silently
 
@@ -583,6 +592,13 @@ python examples/mql_companion/tester_report.py opt.xml --set grid.set \
 python examples/mql_companion/tester_report.py opt.xml --set grid.set \
     --set-from-pass 371 --keep-ranges
 ```
+
+A pass value the template's range could not have produced — `InpFastEMA=44` out of a
+grid declared `5||1||30` — is written exactly as the report has it *and* flagged,
+because either the `.set` was edited after the optimization ran or that column is not
+that input. With `--keep-ranges` the flag matters more: the line it writes,
+`InpFastEMA=44||5||1||30||Y`, asks the terminal to search a grid that cannot contain
+its own winner.
 
 A pass row lists only the *optimized* inputs — the ones the run held fixed are
 not in the report at all. That is why `--set-from-pass` takes the template

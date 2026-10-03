@@ -470,7 +470,11 @@ Three details that cause silent failures:
    inputs into the file it writes; without them a re-test would run the EA on
    defaults for everything else and you would be gating a different strategy.
    Add `--keep-ranges` to keep the ranges instead of fixing every value, which
-   is what you want for a second optimization around the winner.
+   is what you want for a second optimization around the winner. A pass value the
+   template's range could not have produced (`InpFastEMA=44` from a grid declared
+   `5||1||30`) is written as reported and flagged — with `--keep-ranges` the line
+   would otherwise ask the terminal to search a grid that cannot contain the
+   winner.
 
 `--set` also reports the grid size, because `26 x 9 x 17 x 2 = 7956` passes is a
 genetic run and `1001^3` is a plan for next month:

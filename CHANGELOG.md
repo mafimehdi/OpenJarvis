@@ -193,7 +193,7 @@ equity curve, trade and deal counts, win and loss percentages, largest and
 average win/loss, longest streaks, plus the test context down to history
 quality. The bridge serves the same data as `mt5_tester_report` and
 `mt5_tester_compare`, and `mt5_tester_run` (only with `--allow-tester`) launches
-the terminal to produce a report. 314 tests in
+the terminal to produce a report. 321 tests in
 `tests/examples/test_tester_report.py` cover it with no MetaTrader and no
 Windows.
 
@@ -271,7 +271,9 @@ hides. The default filters are the five MT5 offers in its own Optimization Resul
 tab (passes with no trades, no profit, drawdown over 50%, recovery factor under 1,
 Sharpe under 0.5), and a rule fires only on a value the file contains — a pass with
 no trade count is not dropped for having a bad one. Then: a best pass on fewer than
-~30 trades, whose ratios are noise; a spike rather than a plateau (top pass many
+~30 trades, whose ratios are noise, and a best pass whose trade count the file does
+not carry at all, which says the thin-sample rule could not run rather than letting an
+absent number pass it; a spike rather than a plateau (top pass many
 times the median of its neighbours, and how few passes land within 10% of it); an
 input pinned at the start or stop of the range that was optimized, which means the
 real optimum was never tested and the answer is to widen the grid; a criterion
@@ -279,7 +281,13 @@ mismatch, when the pass that wins on `Result` is not the one that wins on recove
 factor or Sharpe; and, for forward runs, out-of-sample degradation — median back
 versus forward result, the forward rank of the in-sample winner, and a Spearman
 correlation between the two orderings, because an in-sample ranking that does not
-predict the out-of-sample one is a ranking of noise.
+predict the out-of-sample one is a ranking of noise. That forward median needs at least
+five passes carrying both halves before it becomes a sentence about the run; below that
+the figures are still reported and the sample is named as too thin, since a median over
+one pair describes one pass. And ranking has to be possible at all: when no pass carries
+the metric it was asked to rank by, `best` is the first row in file order — for a
+genetic run, the order the passes were tried, not the order they scored — and the
+analysis says so instead of presenting that row as the winner.
 
 `.set` files are read and written in MT5's `value||start||step||stop||optimize`
 form (plain `name=value` and MT4-shaped rows are accepted on the way in, and
@@ -290,7 +298,11 @@ and `set_from_pass()` turns one pass back into a file you can re-test. It takes 
 `.set` the optimization ran from, because a pass row lists only the *optimized*
 inputs: without the template, every input the run held fixed would silently revert
 to the EA's compiled defaults and the re-test would measure a different strategy.
-`--keep-ranges` leaves the grid intact for a second optimization around the winner.
+`--keep-ranges` leaves the grid intact for a second optimization around the winner. A
+pass value the template's range could not have produced is written as reported *and*
+flagged: either the `.set` was edited after the optimization ran or that report column
+is not that input, and under `--keep-ranges` the file would otherwise contradict itself
+— `InpFastEMA=44||5||1||30||Y` searches a grid that cannot contain its own winner.
 
 Two runner bugs surfaced while wiring this up, both of which failed as a timeout on
 a run that had succeeded. `Report=` takes a name and MT5 appends the extension —
