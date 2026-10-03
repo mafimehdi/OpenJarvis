@@ -3,7 +3,7 @@
 
 The companion's tests run against fixtures and a fake terminal: they prove the
 readers are honest about what a file does and does not contain, and they prove
-nothing about MetaTrader itself. Nine claims in ``REVIEW-NOTES.md`` rest on
+nothing about MetaTrader itself. Ten claims in ``REVIEW-NOTES.md`` rest on
 documentation and inference rather than observation. This script runs the
 experiments those notes ask for, on a machine that has the terminal installed,
 and prints what it observed in a form that can be pasted back into the pull

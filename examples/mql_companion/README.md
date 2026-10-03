@@ -22,7 +22,7 @@ the only authority that matters: the compiler.
 | `compile_loop.py` | compile → fix → recompile loop built on the OpenJarvis SDK |
 | `install_skill.py` | validate and install `skills/mql5-expert` into `~/.openjarvis/skills` |
 | `verify_on_terminal.py` | runs the `REVIEW-NOTES.md` checks against a real terminal and prints what it observed |
-| `REVIEW-NOTES.md` | the nine claims only a real terminal can settle, and how to settle each |
+| `REVIEW-NOTES.md` | the ten claims only a real terminal can settle, and how to settle each |
 | `skills/mql5-expert/` | `SKILL.md` instructions, a 2-step `skill.toml` pipeline, 3 reference docs, an EA template |
 
 Related pieces that live outside this directory:
@@ -627,7 +627,7 @@ passed, not as a promise.
 
 Everything above is tested with fixtures and a fake terminal, which proves the
 readers are honest about what a file contains and proves nothing about
-MetaTrader. `REVIEW-NOTES.md` lists the nine claims that rest on documentation
+MetaTrader. `REVIEW-NOTES.md` lists the ten claims that rest on documentation
 and inference instead, and `verify_on_terminal.py` runs the experiments:
 
 ```bash

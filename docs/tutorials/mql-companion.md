@@ -725,7 +725,7 @@ live trading.
 ## See Also
 
 - [The example's README](https://github.com/mafimehdi/OpenJarvis/blob/main/examples/mql_companion/README.md) — command reference for `metaeditor.py`, `compile_loop.py`, `tester_report.py`, and `install_skill.py`
-- [Review notes](https://github.com/mafimehdi/OpenJarvis/blob/main/examples/mql_companion/REVIEW-NOTES.md) — the nine claims only a real MetaTrader can settle, each with the shortest way to settle it
+- [Review notes](https://github.com/mafimehdi/OpenJarvis/blob/main/examples/mql_companion/REVIEW-NOTES.md) — the ten claims only a real MetaTrader can settle, each with the shortest way to settle it
 - [`verify_on_terminal.py`](https://github.com/mafimehdi/OpenJarvis/blob/main/examples/mql_companion/verify_on_terminal.py) — runs those checks against an installed terminal and prints what it observed; nothing launches without `--yes`, nothing can place an order
 - [User Guide: External MCP Servers](../user-guide/mcp-external-servers.md) — how `[tools.mcp]` discovers, filters and wraps the bridge
 - [User Guide: Evaluations](../user-guide/evaluations.md) — `mql-bench` in the registry, scoring methods, and `jarvis eval` options

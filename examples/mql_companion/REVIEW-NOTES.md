@@ -14,7 +14,7 @@ Linux — except item 6, which `verify_on_terminal.py` settled on its first run 
 which is kept here because the fix still wants one real report from a non-English
 terminal.
 
-## One command instead of nine experiments
+## One command instead of ten experiments
 
 `verify_on_terminal.py` runs these checks on a machine that has the terminal
 installed and prints what it observed:
@@ -188,6 +188,26 @@ optimization.
 
 **Risk: low.** The readers sniff the content (`parse_any_report`) rather than trusting
 the extension, so a surprise here costs a doc line, not a wrong verdict.
+
+---
+
+## 10. A date MT5 cannot parse, and what it tests instead
+
+**Assumption.** `FromDate`, `ToDate` and `ForwardDate` are read as `YYYY.MM.DD`. The
+format is documented; what is *inferred* is the consequence — the documented fallback
+for a **missing** parameter is the date still sitting in the strategy tester's own
+field, and `tester_ini_warnings()` assumes an **unreadable** one lands in the same
+place, so the run measures a period nobody asked for and reports it as a success.
+
+**Risk: medium.** If MT5 reads `2022-01-01` after all, the warning is noise and should
+be softened. If it does something else — refuses the run, or tests a default range —
+the warning understates it.
+
+**Settled inside check 1**, which launches the terminal with `FromDate=2022-01-01` and
+prints the period the resulting report actually covers. The line reads one of two ways:
+`the terminal tested exactly that range` (soften the warning) or `the terminal tested
+from <date> instead` (the fallback is real). It needs `--yes`, like every launch, and
+it is the only check whose verdict can contradict a warning this repo already ships.
 
 ---
 
