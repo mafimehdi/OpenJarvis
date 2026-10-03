@@ -146,10 +146,19 @@ class CompileResult:
 
     @property
     def error_count(self) -> int:
-        """Error count from the summary line, falling back to parsed errors."""
-        if self.summary_errors is not None:
-            return self.summary_errors
-        return len(self.errors)
+        """The worse of the summary count and the diagnostics actually parsed.
+
+        The summary is usually authoritative and can legitimately be the
+        *higher* number: some builds count errors in an included file that never
+        surface as diagnostics of their own. It may never be the lower one. A
+        log carrying two ``error C2065`` lines under a ``0 errors`` summary
+        contradicts itself, and believing the summary reports a clean build that
+        did not happen.
+        """
+        parsed = len(self.errors)
+        if self.summary_errors is None:
+            return parsed
+        return max(self.summary_errors, parsed)
 
     def format_for_prompt(self, *, max_items: int = 30) -> str:
         """Compact, LLM-friendly rendering of everything the compiler said."""
@@ -315,23 +324,32 @@ def guess_include_dir(metaeditor: Path, source: Path) -> Optional[Path]:
 def decode_compile_log(raw: bytes) -> str:
     """Decode a MetaEditor log, which is UTF-16LE on most builds.
 
-    Tries, in order: a UTF-16 BOM, UTF-8, UTF-16LE when NUL bytes are present,
-    then cp1251/latin-1 as a last resort.
+    Tries, in order: a UTF-16 BOM, NUL parity when there is none, UTF-8 with or
+    without a BOM, then cp1251/latin-1 as a last resort. A leading BOM never
+    survives into the returned text — left in place it is glued to the file name
+    of the first diagnostic.
     """
     if not raw:
         return ""
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return raw.decode("utf-16", errors="replace")
+        return raw.decode("utf-16", errors="replace").lstrip("\ufeff")
     # NUL bytes in the first bytes mean UTF-16 without a BOM. This has to be
     # checked *before* UTF-8: ASCII-in-UTF-16LE decodes as "valid" UTF-8 with
-    # interleaved NULs, which silently corrupts every parsed line.
-    if b"\x00" in raw[:64]:
+    # interleaved NULs, which silently corrupts every parsed line. Their parity
+    # gives the byte order — LE puts them on odd offsets, BE on even ones — and
+    # guessing wrong turns the log into CJK glyphs rather than failing loudly,
+    # so every count then reads as zero and the build looks unparseable.
+    head = raw[:64]
+    if b"\x00" in head:
+        nul_even = sum(1 for i in range(0, len(head), 2) if head[i] == 0)
+        nul_odd = sum(1 for i in range(1, len(head), 2) if head[i] == 0)
+        byte_order = "utf-16-be" if nul_even > nul_odd else "utf-16-le"
         try:
-            return raw.decode("utf-16-le", errors="replace")
+            return raw.decode(byte_order, errors="replace").lstrip("\ufeff")
         except UnicodeDecodeError:
             pass
     try:
-        return raw.decode("utf-8")
+        return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         pass
     for encoding in ("cp1251", "latin-1"):
@@ -480,8 +498,16 @@ def _await_summary(log_path: Path, timeout: float) -> str:
         time.sleep(_LOG_POLL_INTERVAL)
 
 
-def find_artifact(source: Path) -> Optional[Path]:
-    """Return the compiled artifact when it exists and is newer than source."""
+def find_artifact(source: Path, since: Optional[float] = None) -> Optional[Path]:
+    """Return the compiled artifact when it exists and post-dates the build.
+
+    On its own that means "newer than the source", with a margin for coarse
+    filesystem timestamps. Pass the moment the compile was launched
+    (``time.time()``) as ``since`` and it must also post-date *this run*: an
+    ``.ex5`` left behind by the previous successful build is otherwise
+    indistinguishable from a fresh one whenever the source was edited again
+    moments before the run started.
+    """
     ext = ARTIFACT_EXT.get(source.suffix.lower())
     if not ext:
         return None
@@ -489,8 +515,13 @@ def find_artifact(source: Path) -> Optional[Path]:
     if not artifact.exists():
         return None
     try:
-        if artifact.stat().st_mtime + 1 < source.stat().st_mtime:
+        built = artifact.stat().st_mtime
+        if built + 1 < source.stat().st_mtime:
             return None  # stale artifact from an earlier build
+        # Two seconds of margin, not one: FAT and exFAT round timestamps to
+        # two-second boundaries, so a genuinely fresh artifact can read early.
+        if since is not None and built + 2 < since:
+            return None  # artifact predates this compile run
     except OSError:
         return None
     return artifact
@@ -563,6 +594,7 @@ def compile_source(
         pass
 
     started = time.monotonic()
+    started_wall = time.time()
     try:
         proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
             cmd,
@@ -597,7 +629,7 @@ def compile_source(
     result.other_lines = other_lines
     result.summary_errors = sum_errors
     result.summary_warnings = sum_warnings
-    result.artifact = None if syntax_only else find_artifact(src)
+    result.artifact = None if syntax_only else find_artifact(src, since=started_wall)
 
     if not text:
         # No log at all: MetaEditor may have failed to start (missing Wine,
@@ -609,8 +641,27 @@ def compile_source(
             f"compiler.{(' stderr: ' + stderr.strip()) if stderr.strip() else ''}"
         )
         result.ok = False
+    elif result.summary_errors is None and not diagnostics:
+        # A log that exists but holds neither a summary nor one parseable
+        # diagnostic is not evidence of a clean build. MetaEditor may have died
+        # before flushing, or written a shape this parser does not know, and
+        # reporting OK here exits the fix-up loop on a build nobody confirmed.
+        first = next((line for line in other_lines if line.strip()), "")
+        result.error_text = (
+            "the log has no 'N errors, M warnings' summary and no parseable "
+            "diagnostic, so the build could not be confirmed"
+            + (f" (first unparsed line: {first.strip()[:120]!r})" if first else "")
+        )
+        result.ok = False
     else:
         result.ok = result.error_count == 0
+
+    if result.summary_errors is not None and len(result.errors) > result.summary_errors:
+        result.note = (
+            f"the summary reports {result.summary_errors} error(s) but "
+            f"{len(result.errors)} diagnostic(s) were parsed; the higher count "
+            "decides the build"
+        )
 
     if result.ok and not syntax_only and result.artifact is None:
         # MetaEditor's CLI is known to fail silently on some large modular

@@ -88,11 +88,19 @@ out, or the model returns an unchanged file (a loop guard, not an oversight). Ex
 code is 0 only on a clean compile; `--compile-only` needs no model at all, and
 `--json-out` writes a round-by-round report for CI or `jarvis scheduler`.
 
-Two MetaEditor behaviours are handled explicitly because they lie. The process exit
+Four MetaEditor behaviours are handled explicitly because they lie. The process exit
 code is reported inverted across builds, so success is decided by the parsed
-`N errors, M warnings` summary and the exit code is advisory. And a clean log is not
-proof of a build: zero errors with no `.ex5` artifact yields a `note` ("silent CLI
-failure or stale artifact") rather than a false success.
+`N errors, M warnings` summary and the exit code is advisory. A clean log is not proof
+of a build either: zero errors with no `.ex5` artifact yields a `note` ("silent CLI
+failure or stale artifact") rather than a false success, and the artifact must
+post-date the run, not merely the source, so a previous build's `.ex5` is never
+credited to a rebuild that wrote nothing. The summary may raise the error count — an
+included file's diagnostics are counted without always being listed — but never clear
+diagnostics the parser found; a log holding neither a summary nor one parseable
+diagnostic is a toolchain failure (exit code 2, and the fix-up loop stops instead of
+spending a model round), not a silent OK. And log decoding sniffs UTF-16 byte order
+from NUL parity, because a mis-guess decodes to CJK glyphs rather than raising and
+every count then reads as zero.
 
 `mql-bench` (12 tasks — indicator handles, `CTrade` order flow, fixed-fractional lot
 sizing, trailing stops, MQL4→MQL5 ports) scores deterministically and structurally,

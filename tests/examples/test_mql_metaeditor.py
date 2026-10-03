@@ -15,6 +15,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,27 @@ class TestDecodeCompileLog:
 
     def test_undecodable_bytes_do_not_raise(self) -> None:
         assert isinstance(me.decode_compile_log(b"\xff\x00\x01 garbage"), str)
+
+    def test_utf16be_without_bom_is_decoded(self) -> None:
+        """NUL parity gives the byte order, and guessing wrong fails silently.
+
+        A mis-read order does not raise: it decodes to plausible CJK glyphs, the
+        summary regex matches nothing, and every count reads as zero.
+        """
+        raw = "Result: 0 errors, 0 warnings\n".encode("utf-16-be")
+        text = me.decode_compile_log(raw)
+        assert "0 errors" in text
+        assert me.parse_compile_log(text)[2] == 0
+
+    def test_utf8_bom_does_not_leak_into_the_first_diagnostic(self) -> None:
+        raw = (
+            "\ufeffMyEA.mq5(12,5) : error C2065: 'lot' - undeclared identifier\n"
+            "0 errors, 0 warnings\n"
+        ).encode("utf-8")
+        diags, _other, errors, _w = me.parse_compile_log(me.decode_compile_log(raw))
+        assert errors == 0
+        assert len(diags) == 1
+        assert diags[0].file == "MyEA.mq5"
 
     def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
         assert me.read_compile_log(tmp_path / "nope.log") == ""
@@ -119,6 +141,19 @@ class TestParseCompileLog:
         text = "Some build banner we do not understand\nResult: 0 errors, 0 warnings"
         _diags, other, _e, _w = me.parse_compile_log(text)
         assert other == ["Some build banner we do not understand"]
+
+    def test_a_log_with_nothing_parseable_yields_no_evidence(self) -> None:
+        """The shape ``compile_source`` refuses to call a success.
+
+        No summary and no diagnostic: whatever MetaEditor meant by it, the
+        parser holds no evidence either way.
+        """
+        diags, other, errors, warnings = me.parse_compile_log(
+            "MetaEditor 5 build 4620\nsome banner we do not know\n"
+        )
+        assert diags == []
+        assert (errors, warnings) == (None, None)
+        assert len(other) == 2
 
     def test_blank_lines_ignored(self) -> None:
         _diags, other, _e, _w = me.parse_compile_log("\n\n   \n")
@@ -187,6 +222,24 @@ class TestArtifactDetection:
     def test_missing_artifact(self, tmp_path: Path) -> None:
         src = self._write(tmp_path / "MyEA.mq5", 1_000.0)
         assert me.find_artifact(src) is None
+
+    def test_artifact_predating_the_run_is_rejected(self, tmp_path: Path) -> None:
+        """``since`` closes the window the one-second margin leaves open.
+
+        An artifact a fraction of a second older than the source still looks
+        fresh on the strength of the margin alone — enough for a previous
+        build's ``.ex5`` to be credited to a run that never wrote one.
+        """
+        source = tmp_path / "MyEA.mq5"
+        source.write_text("// ea")
+        artifact = tmp_path / "MyEA.ex5"
+        artifact.write_text("binary")
+        old = time.time() - 5.0
+        os.utime(artifact, (old, old))
+        os.utime(source, (old + 0.5, old + 0.5))
+
+        assert me.find_artifact(source) == artifact
+        assert me.find_artifact(source, since=time.time()) is None
 
     def test_mq4_maps_to_ex4(self, tmp_path: Path) -> None:
         src = self._write(tmp_path / "MyEA.mq4", 1_000.0)
@@ -368,6 +421,95 @@ class TestCompileSource:
         result = me.compile_source(source, metaeditor=editor)
         assert result.ok is False
         assert "unsupported extension" in result.error_text
+
+    def test_summary_cannot_clear_parsed_errors(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A log that contradicts itself is not a clean build.
+
+        The summary stays authoritative when it reports *more* errors than the
+        parser found — an included file's diagnostics are counted without always
+        being listed. The reverse is never believed.
+        """
+        editor = tmp_path / "metaeditor64.exe"
+        editor.write_text("x")
+        source = tmp_path / "MyEA.mq5"
+        source.write_text("// ea")
+        self._fake_run(
+            monkeypatch,
+            "MyEA.mq5(12,5) : error C2065: 'lot' - undeclared identifier\n"
+            "MyEA.mq5(20,1) : error C1001: unexpected end of file\n"
+            "0 errors, 0 warnings\n",
+            me.default_log_path(source),
+            0,
+        )
+
+        result = me.compile_source(source, metaeditor=editor, wine=False)
+
+        assert result.ok is False
+        assert result.error_count == 2
+        assert "higher count" in result.note
+
+    def test_unparseable_log_is_a_toolchain_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        editor = tmp_path / "metaeditor64.exe"
+        editor.write_text("x")
+        source = tmp_path / "MyEA.mq5"
+        source.write_text("// ea")
+        self._fake_run(
+            monkeypatch, "MetaEditor 5 build 4620\n", me.default_log_path(source), 0
+        )
+
+        result = me.compile_source(source, metaeditor=editor, wine=False)
+
+        assert result.ok is False
+        assert "could not be confirmed" in result.error_text
+        assert "MetaEditor 5 build 4620" in result.error_text
+
+    def test_syntax_only_run_needs_evidence_too(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``/s`` has no artifact to cross-check, so the log is all the proof."""
+        editor = tmp_path / "metaeditor64.exe"
+        editor.write_text("x")
+        source = tmp_path / "MyEA.mq5"
+        source.write_text("// ea")
+        self._fake_run(monkeypatch, "junk\n", me.default_log_path(source), 0)
+
+        result = me.compile_source(
+            source, metaeditor=editor, syntax_only=True, wine=False
+        )
+
+        assert result.ok is False
+        assert result.note == ""
+
+    def test_artifact_from_a_previous_run_is_not_credited(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A rebuild that wrote nothing must not inherit the last ``.ex5``."""
+        editor = tmp_path / "metaeditor64.exe"
+        editor.write_text("x")
+        source = tmp_path / "MyEA.mq5"
+        source.write_text("// ea")
+        artifact = tmp_path / "MyEA.ex5"
+        artifact.write_text("binary")
+        old = time.time() - 30.0
+        os.utime(artifact, (old, old))
+
+        def run(cmd, **kwargs):
+            me.default_log_path(source).write_bytes(
+                "Result: 0 errors, 0 warnings".encode("utf-16")
+            )
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(me.subprocess, "run", run)
+
+        result = me.compile_source(source, metaeditor=editor, wine=False)
+
+        assert result.ok is True
+        assert result.artifact is None
+        assert "silent CLI failure" in result.note
 
     def test_no_editor_found(self, tmp_path: Path, monkeypatch) -> None:
         source = tmp_path / "MyEA.mq5"

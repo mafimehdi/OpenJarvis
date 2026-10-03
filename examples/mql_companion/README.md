@@ -133,7 +133,13 @@ Scoring is deterministic and structural (no compiler needed): `required` API sur
    tabular shape and the `N errors, M warnings` summary. Exit code is advisory only;
    the parsed summary decides.
 6. **Check the artifact** — a clean log with no `.ex5` written gets a `note`
-   ("silent CLI failure or stale artifact") instead of a false success.
+   ("silent CLI failure or stale artifact") instead of a false success. The
+   artifact must post-date this run, not merely the source, so a previous
+   build's `.ex5` is never credited to a rebuild that wrote nothing.
+7. **Distrust a summary that contradicts the log** — it may raise the error
+   count, never clear diagnostics the parser found. A log with neither a
+   summary nor one parseable diagnostic is a toolchain failure (exit code 2),
+   not a clean build.
 7. **Fix** — the diagnostics go back to the agent with the current source; the answer
    is extracted from its ```mql5 fence and written back.
 8. **Repeat** until zero errors, `--max-rounds` is hit, or the model returns an

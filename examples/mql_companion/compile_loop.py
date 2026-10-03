@@ -424,6 +424,8 @@ def main(
             _echo(f"artifact: {result.artifact}")
     else:
         _echo(f"FAILED after {len(rounds)} round(s) — {result.error_count} error(s).")
+        if result.error_text:
+            _echo(f"  ! {result.error_text}")
         for diag in result.errors[:20]:
             _echo(f"  {diag.format()}")
 
@@ -445,6 +447,12 @@ def main(
         )
         _echo(f"report: {json_out}")
 
+    if result.error_text and not result.diagnostics:
+        # The documented contract: 2 is a toolchain problem, 1 is a source that
+        # still does not compile. "FAILED — 0 error(s)" is neither when
+        # MetaEditor left no log this parser could read, and CI should not
+        # retry a model round against a broken toolchain.
+        sys.exit(2)
     sys.exit(0 if result.ok else 1)
 
 

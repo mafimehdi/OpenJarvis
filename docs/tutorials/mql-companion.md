@@ -50,10 +50,11 @@ MetaQuotes removed the standalone `mql.exe` compiler, so MetaEditor is the only 
 metaeditor64.exe /compile:"C:\...\MQL5\Experts\MyEA.mq5" /inc:"C:\...\MQL5" /log:"C:\...\MyEA.mq5.log"
 ```
 
-1. **`/log` writes UTF-16LE.** Reading it as UTF-8 mostly *works* — which is the trap: ASCII in UTF-16LE decodes as valid UTF-8 with interleaved NUL bytes, so every line comes back corrupted rather than raising. `decode_compile_log()` sniffs the BOM, then NUL bytes, then falls back through UTF-8 → cp1251 → latin-1.
+1. **`/log` writes UTF-16LE.** Reading it as UTF-8 mostly *works* — which is the trap: ASCII in UTF-16LE decodes as valid UTF-8 with interleaved NUL bytes, so every line comes back corrupted rather than raising. `decode_compile_log()` sniffs the BOM, then NUL *parity* when there is none (LE puts NULs on odd offsets, BE on even ones, and guessing wrong yields plausible CJK glyphs rather than an error), then falls back through UTF-8 → cp1251 → latin-1, and strips a leading BOM so it cannot be glued to the first diagnostic's file name.
 2. **The exit code is advisory.** Community scripts report it inverted (0 = failed, 1 = success) across builds, so `compile_source()` trusts the parsed summary line — `0 errors, 0 warnings` — and treats the process exit code as a hint.
 3. **Diagnostics come in two shapes.** The positional `path(line,col) : error C2065: message` form and a tabular form; `parse_compile_log()` handles both plus the summary variants.
-4. **A clean log is not proof of a build.** MetaEditor can report zero errors and write no `.ex5`. When the log is clean but the artifact is missing, the result carries a `note` ("silent CLI failure or stale artifact") instead of a false success.
+4. **A clean log is not proof of a build.** MetaEditor can report zero errors and write no `.ex5`. When the log is clean but the artifact is missing, the result carries a `note` ("silent CLI failure or stale artifact") instead of a false success. The artifact must also post-date *this run*, not merely the source, so a previous build's `.ex5` is never credited to a rebuild that wrote nothing.
+5. **The summary cannot clear the diagnostics.** `N errors, M warnings` may raise the error count — an included file's diagnostics are counted without always being listed — but never lower it below what the parser found. And a log holding neither a summary nor one parseable diagnostic is reported as a toolchain failure (exit code 2), not as a silent success.
 
 ## Step 1: Compile and Report Only
 
@@ -76,7 +77,7 @@ round 0 (compile only)
 FAILED — 2 error(s).
 ```
 
-Exit codes: **0** clean compile, **1** still failing, **2** toolchain problem (MetaEditor not found, unreadable source). Add `--json-out report.json` for a machine-readable round-by-round report, and `--syntax-only` to pass `/s` (parse check, no artifact).
+Exit codes: **0** clean compile, **1** still failing, **2** toolchain problem (MetaEditor not found, unreadable source, no readable compile log). Add `--json-out report.json` for a machine-readable round-by-round report, and `--syntax-only` to pass `/s` (parse check, no artifact).
 
 ## Step 2: The Fix Loop
 
