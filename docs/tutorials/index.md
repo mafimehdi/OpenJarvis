@@ -44,6 +44,14 @@ Hands-on guides that walk through building real applications with OpenJarvis. Ea
 
     [:octicons-arrow-right-24: Get started](code-companion.md)
 
+- :material-chart-line:{ .lg .middle } **MQL Companion**
+
+    ---
+
+    MetaTrader Expert Advisor development where the compiler decides when the code is done and the terminal decides what is true: a MetaEditor compile-fix loop, an MCP bridge that serves live contract specs, Strategy Tester metrics, optimization passes and forward checks to the agent, an installable `mql5-expert` skill, and a benchmark that measures whether a model writes MQL5 or MQL4.
+
+    [:octicons-arrow-right-24: Get started](mql-companion.md)
+
 - :material-puzzle:{ .lg .middle } **Skills Workflow**
 
     ---
@@ -64,6 +72,7 @@ Each tutorial demonstrates a different combination of OpenJarvis primitives work
 | Scheduled Ops | `orchestrator`, `native_react` | Agents, Tools, Scheduler |
 | Messaging Hub | `orchestrator` | Agents, Tools (memory), Channels |
 | Code Companion | `native_react` | Agents, Tools (git + file + shell) |
+| MQL Companion | `native_react`, `orchestrator` | Agents, Tools (file + shell), Skills, Evals |
 
 ## Estimated Time
 
