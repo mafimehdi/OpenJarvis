@@ -450,6 +450,25 @@ class TestOptInRuns:
         # The honest part: a script cannot see a frozen UI thread.
         assert "not observable from a script" in result.note
 
+    def test_a_malformed_start_date_is_put_to_the_terminal(
+        self, fake_terminal: Path, tmp_path: Path
+    ) -> None:
+        """Check 1 also carries the one date rule that cannot be tested here.
+
+        `tester_ini_warnings` claims MT5 parses only `YYYY.MM.DD`, and that
+        comes from the documentation rather than from a terminal. The fake
+        echoes `FromDate` straight into its report, so it cannot tell the two
+        readings apart; on Windows this line is the evidence, and it says which
+        way the warning should move.
+        """
+        verifier = self._verifier(fake_terminal, tmp_path)
+
+        result = verifier.check_1_forward_mode_mapping()
+
+        joined = "\n".join(result.evidence)
+        assert "FromDate='2022-01-01' requested:" in joined
+        assert verifier.launches == 2
+
     def test_an_optimization_run_writes_a_table(
         self, fake_terminal: Path, tmp_path: Path
     ) -> None:

@@ -461,7 +461,10 @@ Three details that cause silent failures:
    `ExpertParameters`, MT5 falls back to `MQL5\Profiles\Tester\<EA>.set`; if
    that is missing too it uses the defaults and, per the documentation,
    "optimization is not possible". `tester_ini_warnings()` says this before the
-   terminal is launched, and `--run` prints those warnings.
+   terminal is launched, and `--run` prints those warnings. It also reads the
+   dates: MT5 parses `YYYY.MM.DD` only and silently falls back to the tester's
+   own field for anything else, an inverted range tests nothing, and
+   `ForwardDate` is valid only with `ForwardMode=4`.
 3. **A pass row lists only the optimized inputs.** `--set-from-pass` therefore
    takes the `.set` the optimization ran from (`--set`) and carries its fixed
    inputs into the file it writes; without them a re-test would run the EA on

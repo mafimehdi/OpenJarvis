@@ -193,7 +193,7 @@ equity curve, trade and deal counts, win and loss percentages, largest and
 average win/loss, longest streaks, plus the test context down to history
 quality. The bridge serves the same data as `mt5_tester_report` and
 `mt5_tester_compare`, and `mt5_tester_run` (only with `--allow-tester`) launches
-the terminal to produce a report. 306 tests in
+the terminal to produce a report. 314 tests in
 `tests/examples/test_tester_report.py` cover it with no MetaTrader and no
 Windows.
 
@@ -305,7 +305,15 @@ runner now waits for size and mtime to stop moving. `tester_ini_warnings()` name
 ini mistakes that fail silently — optimizing with no `ExpertParameters` (MT5 falls back
 to `MQL5\Profiles\Tester\<EA>.set` and, without it, cannot optimize at all), a
 `.set` given as a path when MT5 resolves only a name inside that folder, a report
-folder MT5 will not create — and `--run` prints them before launching anything.
+folder MT5 will not create, and the dates — a `FromDate` outside the documented
+`YYYY.MM.DD`, where the risk is the fallback MT5 documents for a *missing* date (the
+value still in the strategy tester's own field) reaching a merely unreadable one; an
+inverted range, which tests nothing; a
+`ForwardDate` without `ForwardMode=4`, the only mode that reads it; and a split
+outside the range, which either holds nothing out from the optimizer or leaves the
+forward half empty. `--run` prints them before launching anything, and
+`verify_on_terminal.py` check 1 puts the format claim to a real terminal, since it
+comes from MetaQuotes' documentation rather than from observation.
 `build_tester_ini()` gained `ForwardMode`, `ForwardDate`, `UseRemote`, `UseCloud`
 and `ProfitInPips`, and the report vocabulary gained the curve-shape metrics
 (`Z-Score`, `AHPR`, `GHPR`, `LR Correlation`, `LR Standard Error`, MFE/MAE

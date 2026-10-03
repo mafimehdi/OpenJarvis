@@ -178,6 +178,12 @@ def _span(report: Any) -> Tuple[Optional[date], Optional[date]]:
     return _parse_day(metrics.get("from_date")), _parse_day(metrics.get("to_date"))
 
 
+#: A start date in the shape MT5 is documented *not* to parse: the help says
+#: "FromDate — starting date of the testing range in format YYYY.MM.DD".
+_DASH_DATE = "2022-01-01"
+_DASH_DATE_PARSED = date(2022, 1, 1)
+
+
 def _split_line(mode: int, back: Any, forward: Any) -> str:
     """Describe one ForwardMode as a back/forward date split, if the reports
     carry dates at all."""
@@ -315,9 +321,17 @@ class Verifier:
         optimization: int = 0,
         process_grace: float = 5.0,
         sampler: Optional[_SizeSampler] = None,
+        from_date_override: str = "",
     ) -> Dict[str, Any]:
         """One run of the terminal. Never raises: a failure is evidence."""
-        key = (forward_mode, tag, model, optimization, process_grace)
+        key = (
+            forward_mode,
+            tag,
+            model,
+            optimization,
+            process_grace,
+            from_date_override,
+        )
         if key in self._cache:
             return self._cache[key]
         target = self.out_dir / f"verify-{tag}-m{forward_mode}.xml"
@@ -325,7 +339,7 @@ class Verifier:
             expert=self.expert,
             symbol=self.symbol,
             period=self.period,
-            from_date=self.from_date,
+            from_date=from_date_override or self.from_date,
             to_date=self.to_date,
             model=model,
             optimization=optimization,
@@ -470,6 +484,34 @@ class Verifier:
                 continue
             saw_forward += 1
             result.add(_split_line(mode, report, forward))
+
+        # The date rules in tester_ini_warnings are read off MetaQuotes' config
+        # documentation, not observed. This launch asks the terminal which
+        # reading is true by requesting a start date in the shape the help says
+        # it does not parse, then looks at the period the report actually covers.
+        if self.allow_runs:
+            record = self.launch(
+                forward_mode=0, tag="bad-date", from_date_override=_DASH_DATE
+            )
+            if record["error"]:
+                result.add(f"dash date: {record['error']}")
+            else:
+                outcome = record["outcome"] or {}
+                saw_from, _saw_to = _span(outcome.get("report"))
+                if saw_from == _DASH_DATE_PARSED:
+                    verdict = (
+                        "the terminal tested exactly that range, so it does read "
+                        "dashes and the YYYY.MM.DD warning is too strict — "
+                        "soften it and say so in the PR"
+                    )
+                elif saw_from is None:
+                    verdict = "the report carries no from-date, so this says nothing"
+                else:
+                    verdict = (
+                        f"the terminal tested from {saw_from} instead, which is the "
+                        "silent fallback the warning describes"
+                    )
+                result.add(f"FromDate='{_DASH_DATE}' requested: {verdict}")
         result.seconds = round(time.monotonic() - started, 2)
         if wrong_zero:
             result.status = FAIL

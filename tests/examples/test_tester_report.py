@@ -2397,6 +2397,82 @@ class TestIniWarnings:
         warnings = tr.tester_ini_warnings(shutdown_terminal=False)
         assert any("wait on the report file" in warning for warning in warnings)
 
+    def test_a_well_formed_forward_config_says_nothing_about_dates(self) -> None:
+        warnings = tr.tester_ini_warnings(
+            expert="MyEA",
+            expert_parameters="MyEA.set",
+            optimization=2,
+            report="TesterReport",
+            from_date="2022.01.01",
+            to_date="2023.01.01",
+            forward_mode=4,
+            forward_date="2022.09.01",
+        )
+        assert warnings == []
+
+    def test_a_date_the_terminal_cannot_parse_is_flagged(self) -> None:
+        """MT5 reads YYYY.MM.DD; anything else falls back to the tester's field.
+
+        That fallback is the whole problem: the run then measures whatever
+        period the strategy tester happened to be showing, and reports it as a
+        success.
+        """
+        warnings = tr.tester_ini_warnings(from_date="2022-01-01", to_date="01.01.2023")
+        assert sum("YYYY.MM.DD" in warning for warning in warnings) == 2
+
+    def test_an_impossible_date_is_flagged(self) -> None:
+        warnings = tr.tester_ini_warnings(from_date="2023.02.30")
+        assert any("not a real calendar date" in warning for warning in warnings)
+
+    def test_an_inverted_range_is_flagged(self) -> None:
+        # Verbatim from a config posted on the MQL5 forum: FromDate after
+        # ToDate, and the terminal runs it without complaint.
+        warnings = tr.tester_ini_warnings(from_date="2023.11.10", to_date="2023.06.30")
+        assert any("range is empty" in warning for warning in warnings)
+
+    def test_forward_date_is_only_read_in_mode_4(self) -> None:
+        warnings = tr.tester_ini_warnings(
+            from_date="2023.01.01",
+            to_date="2023.12.31",
+            forward_mode=3,
+            forward_date="2023.08.02",
+        )
+        assert any("valid only with ForwardMode=4" in warning for warning in warnings)
+
+    def test_forward_mode_4_needs_its_date(self) -> None:
+        warnings = tr.tester_ini_warnings(
+            from_date="2023.01.01", to_date="2023.12.31", forward_mode=4
+        )
+        assert any("takes its date from ForwardDate" in warning for warning in warnings)
+
+    def test_a_split_outside_the_range_holds_nothing_out(self) -> None:
+        early = tr.tester_ini_warnings(
+            from_date="2023.01.01",
+            to_date="2023.12.31",
+            forward_mode=4,
+            forward_date="2023.01.01",
+        )
+        assert any("whole range" in warning for warning in early)
+        late = tr.tester_ini_warnings(
+            from_date="2023.01.01",
+            to_date="2023.12.31",
+            forward_mode=4,
+            forward_date="2024.06.01",
+        )
+        assert any("forward half would be empty" in warning for warning in late)
+
+    def test_callers_that_pass_no_dates_get_the_old_answers(self) -> None:
+        """The date rules must not fire on a config that states no dates."""
+        assert tr.tester_ini_warnings(expert_parameters="grid.txt") == [
+            warning
+            for warning in tr.tester_ini_warnings(
+                expert_parameters="grid.txt",
+                from_date="",
+                to_date="",
+                forward_date="",
+            )
+        ]
+
     def test_the_new_keys_reach_the_ini(self) -> None:
         text = tr.build_tester_ini(
             expert="MyEA",

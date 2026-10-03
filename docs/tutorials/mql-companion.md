@@ -555,6 +555,22 @@ compiled defaults and — in the documentation's words — optimization is not
 possible. `tester_ini_warnings()` raises both of these, and `--run` prints them
 before anything is launched.
 
+It reads the dates too, because they fail the same quiet way. MT5's config
+documentation specifies `YYYY.MM.DD` for `FromDate`, `ToDate` and `ForwardDate`,
+and specifies what happens when a date is *missing*: the value still sitting in
+the strategy tester's own field. Nothing on the command line reports a date the
+terminal could not read, so `FromDate=2022-01-01` risks that same fallback and a
+run measuring some other period — an inference from the documented case, which
+is why `verify_on_terminal.py` check 1 launches a terminal with exactly that
+value and reports the period the resulting report covers. An inverted range (`FromDate` after `ToDate` — a real
+config posted on the MQL5 forum has exactly that) tests nothing at all. And
+`ForwardDate` is documented as valid only with `ForwardMode=4`, the custom
+split: with any other mode the terminal ignores it and splits 1/2, 1/3 or 1/4
+of the range instead, which is a different experiment from the one asked for.
+A split outside the range is worse still — at or before `FromDate` it holds
+nothing out from the optimizer, at or after `ToDate` the forward half is empty,
+and an empty forward report reads as a check that found nothing wrong.
+
 ```bash
 # what a .set asks the optimizer to do, including the size of the grid
 python examples/mql_companion/tester_report.py --set grid.set

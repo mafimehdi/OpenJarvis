@@ -84,7 +84,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import (
     Any,
@@ -3240,6 +3240,25 @@ def tester_profiles_dir(data_dir: Path | str) -> Path:
     return Path(data_dir).expanduser() / "MQL5" / "Profiles" / "Tester"
 
 
+#: MT5 reads `[Tester]` dates as YYYY.MM.DD and nothing else.
+_TESTER_DATE_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}$")
+
+
+def _parse_tester_date(value: Any) -> Optional[date]:
+    """A `[Tester]` date, or ``None`` when MT5 would not read it as one.
+
+    Both a wrong separator and an impossible day land here: the first is not a
+    date the terminal recognizes, the second is not a date at all.
+    """
+    text = normalize_text(value)
+    if not text or not _TESTER_DATE_RE.match(text):
+        return None
+    try:
+        return datetime.strptime(text, "%Y.%m.%d").date()
+    except ValueError:
+        return None
+
+
 def tester_ini_warnings(
     *,
     expert: str = "",
@@ -3249,13 +3268,19 @@ def tester_ini_warnings(
     report: str = "",
     shutdown_terminal: bool = True,
     visual: bool = False,
+    from_date: str = "",
+    to_date: str = "",
+    forward_mode: Optional[int] = None,
+    forward_date: str = "",
 ) -> List[str]:
     """The ini mistakes that fail silently.
 
     Each of these leaves MT5 running something other than what was asked for,
     with no error on the command line: an optimization with no .set, a .set
-    named by path when MT5 only looks in Profiles\\Tester, and a run whose
-    report folder does not exist.
+    named by path when MT5 only looks in Profiles\\Tester, a run whose report
+    folder does not exist, and a date the terminal cannot parse — for which it
+    falls back to whatever the strategy tester's own field still holds, so the
+    run measures a period nobody asked for.
     """
     warnings: List[str] = []
     if optimization and optimization > 0 and not expert_parameters:
@@ -3301,6 +3326,65 @@ def tester_ini_warnings(
             "is written; a caller waiting on the process will wait forever, so "
             "wait on the report file instead."
         )
+
+    # -- dates: MT5 parses YYYY.MM.DD and quietly ignores the rest ------------
+    for label, value in (
+        ("FromDate", from_date),
+        ("ToDate", to_date),
+        ("ForwardDate", forward_date),
+    ):
+        text = normalize_text(value)
+        if not text:
+            continue
+        if not _TESTER_DATE_RE.match(text):
+            warnings.append(
+                f"{label}='{text}' is not the YYYY.MM.DD the config "
+                "documentation specifies, and nothing on the command line "
+                "reports a date the terminal could not read. When the parameter "
+                "is missing MT5 uses the date still in the strategy tester's own "
+                "field, so an unreadable one risks the same fallback and a run "
+                "that measures a period nobody asked for."
+            )
+        elif _parse_tester_date(text) is None:
+            warnings.append(
+                f"{label}='{text}' has the right shape but is not a real calendar date."
+            )
+    start = _parse_tester_date(from_date)
+    end = _parse_tester_date(to_date)
+    if start is not None and end is not None and start >= end:
+        warnings.append(
+            f"FromDate={from_date} is not before ToDate={to_date}: the testing "
+            "range is empty, and the terminal reports no error for one."
+        )
+    split = _parse_tester_date(forward_date)
+    if normalize_text(forward_date) and forward_mode != 4:
+        # Documented: "ForwardDate — starting date of forward testing... The
+        # parameter is valid only if ForwardMode=4."
+        mode = "unset" if forward_mode is None else str(int(forward_mode))
+        warnings.append(
+            f"ForwardDate={forward_date} is valid only with ForwardMode=4 (the "
+            f"custom split); ForwardMode={mode} ignores it, so the split is "
+            "1/2, 1/3 or 1/4 of the range — or none — and not the date asked for."
+        )
+    if forward_mode == 4 and not normalize_text(forward_date):
+        warnings.append(
+            "ForwardMode=4 is the custom split and takes its date from "
+            "ForwardDate, which is not set: nothing says where the forward half "
+            "starts."
+        )
+    if split is not None and forward_mode == 4:
+        if start is not None and split <= start:
+            warnings.append(
+                f"ForwardDate={forward_date} is not after FromDate={from_date}: "
+                "the forward half would cover the whole range, so nothing is "
+                "held out from the optimizer."
+            )
+        if end is not None and split >= end:
+            warnings.append(
+                f"ForwardDate={forward_date} is not before ToDate={to_date}: the "
+                "forward half would be empty, and an empty forward report reads "
+                "as a check that found nothing wrong."
+            )
     return warnings
 
 
@@ -4174,6 +4258,10 @@ def main(  # noqa: C901 - a CLI with one option per tester setting
             model=model,
             report=str((out_report or Path.cwd() / "TesterReport.xml").with_suffix("")),
             shutdown_terminal=not no_shutdown,
+            from_date=from_date,
+            to_date=to_date,
+            forward_mode=forward_mode,
+            forward_date=forward_date,
         )
         for warning in ini_warnings:
             click.echo(f"  [ini] {warning}", err=True)
