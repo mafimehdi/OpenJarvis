@@ -907,6 +907,48 @@ class TestTesterTools:
         assert metrics["equity_drawdown_relative_pct"] == 8.01
         assert payload["found_by"] == "explicit"
 
+    def test_a_gate_on_an_unreadable_report_says_why_it_failed(
+        self, server: Any, tmp_path: Path
+    ) -> None:
+        """``passed: false`` has to say whether the metric was low or absent.
+
+        A report exported by a terminal in another language parses to no
+        metrics, so every gate on it fails — which is right, but `actual: null`
+        on its own reads as "the EA did not clear the bar" rather than "this
+        file could not be read".
+        """
+        unreadable = tmp_path / "Localized.htm"
+        unreadable.write_text(
+            "<html><body><table>"
+            "<tr><td>Чистая прибыль</td><td>-8 400.00</td></tr>"
+            "<tr><td>Фактор прибыльности</td><td>0.42</td></tr>"
+            "</table></body></html>",
+            encoding="utf-8",
+        )
+
+        payload = _payload(
+            server, "mt5_tester_report", path=str(unreadable), min_profit_factor=1.2
+        )
+
+        thresholds = payload["thresholds"]
+        assert thresholds["all_passed"] is False
+        result = thresholds["results"][0]
+        assert result["actual"] is None
+        assert "not in the report" in result["message"]
+        # Why it is missing travels with it, not just the fact that it is.
+        assert any("matched the vocabulary" in w for w in payload["warnings"])
+        assert payload["raw_labels"] == 2
+
+    def test_a_gate_that_passes_carries_its_reason_too(
+        self, server: Any, tester_report: Path
+    ) -> None:
+        payload = _payload(
+            server, "mt5_tester_report", path=str(tester_report), min_profit_factor=1.2
+        )
+        result = payload["thresholds"]["results"][0]
+        assert result["passed"] is True
+        assert "ok" in result["message"]
+
     def test_a_prompt_summary_is_included_by_default(
         self, server: Any, tester_report: Path
     ) -> None:
@@ -1530,6 +1572,40 @@ class TestTesterForwardCheckTool:
         assert payload["back"]["source"] == str(back)
         assert payload["forward"]["found_by"] == "companion"
         assert payload["forward"]["source"] == str(forward)
+
+    def test_an_unreadable_half_never_comes_back_as_holds_up(
+        self, server: Any, forward_run: Tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        """The library's inconclusive verdict has to survive the bridge.
+
+        A forward half exported by a terminal in another language parses to
+        nothing; there is no metric both halves carry, so no verdict is
+        available — and `holds_up` here would be a claim about data nobody read.
+        """
+        back, _forward = forward_run
+        localized = tmp_path / "Localized.forward.htm"
+        localized.write_text(
+            "<html><body><table>"
+            "<tr><td>Чистая прибыль</td><td>-8 400.00</td></tr>"
+            "<tr><td>Фактор прибыльности</td><td>0.42</td></tr>"
+            "</table></body></html>",
+            encoding="utf-8",
+        )
+
+        payload = _payload(
+            server,
+            "mt5_tester_forward_check",
+            path=str(back),
+            forward_path=str(localized),
+        )
+
+        check = payload["forward_check"]
+        assert check["verdict"] == "inconclusive"
+        assert any("no metric in common" in reason for reason in check["reasons"])
+        assert any("parsed to no metrics" in reason for reason in check["reasons"])
+        assert any(
+            "matched the vocabulary" in w for w in payload["forward"]["warnings"]
+        )
 
     def test_an_explicit_forward_path_is_used(
         self, server: Any, forward_run: Tuple[Path, Path], tmp_path: Path

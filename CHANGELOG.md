@@ -210,7 +210,10 @@ this exists to prevent).
 
 Nothing is invented and nothing passes quietly. A metric absent from the file is
 listed in `missing`, and a CI gate on a missing metric *fails* — a check that
-passes because it could not find the number is worse than no check. The
+passes because it could not find the number is worse than no check. The reason fails
+with it: `thresholds.results[].message` crosses the bridge as well as the CLI, so
+`passed: false` tells an agent whether the metric was below the bar or absent from a
+file nobody could read, instead of leaving `actual: null` to be guessed at. The
 documented identities are enforced: `net = gross_profit + gross_loss`,
 `profit_factor = gross_profit / abs(gross_loss)`,
 `recovery_factor = net / balance_drawdown`; missing values are derived from them

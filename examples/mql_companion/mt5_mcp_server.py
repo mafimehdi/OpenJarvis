@@ -2077,6 +2077,12 @@ def build_tools(
                         "rule": r.rule,
                         "actual": r.actual,
                         "passed": r.passed,
+                        # The CLI has always printed this and the bridge dropped
+                        # it. Without it `actual: null, passed: false` cannot be
+                        # told apart from a metric that was simply below the bar
+                        # — and on a report this parser could not read, the
+                        # reason is the whole answer.
+                        "message": r.message,
                     }
                     for r in results
                 ],
