@@ -713,6 +713,19 @@ def _match_label(cell: str) -> Optional[str]:
 # Parsers
 # ---------------------------------------------------------------------------
 
+
+def _looks_like_label(cell: str) -> bool:
+    """Whether a cell reads as a label rather than a value.
+
+    Deliberately script-agnostic. The point is to keep the labels of a report
+    this parser cannot name, and those are precisely the ones outside ``[a-z]``.
+    """
+    text = normalize_text(cell)
+    if not text or normalize_number(text) is not None:
+        return False
+    return any(character.isalpha() for character in text)
+
+
 _TAG_RE = re.compile(r"<[^>]+>")
 _ROW_BREAK_RE = re.compile(r"</(tr|p|div|li|h\d|td|th)>|<br\s*/?>|\r?\n", re.IGNORECASE)
 
@@ -749,13 +762,22 @@ def parse_cell_stream(cells: Sequence[str], report: TesterReport) -> None:
     Rule: when a cell is a known label, the next cell that is *not* a known
     label is its value. Reports put two label/value pairs on one row, so a
     label may be followed directly by another label.
+
+    A file where nothing matches keeps its label/value pairs in ``raw`` and
+    says so in ``warnings``: an empty report handed to an agent reads as "no
+    drawdown, no losses", which is the opposite of what an unread file means.
+    The scan never consumes a pair it did not recognize, so a known label
+    sitting after an unknown one is still matched.
     """
     index = 0
     total = len(cells)
+    skipped: List[Tuple[str, str]] = []
     while index < total:
         cell = cells[index]
         key = _match_label(cell)
         if key is None:
+            if _looks_like_label(cell) and index + 1 < total:
+                skipped.append((normalize_text(cell), normalize_text(cells[index + 1])))
             index += 1
             continue
         value_cell: Optional[str] = None
@@ -770,6 +792,17 @@ def parse_cell_stream(cells: Sequence[str], report: TesterReport) -> None:
         report.raw.setdefault(normalize_text(cell), normalize_text(value_cell))
         _assign(report, key, value_cell, cell)
         index += 2
+
+    if not report.metrics and skipped:
+        for label, value in skipped:
+            report.raw.setdefault(label, value)
+        report.warnings.append(
+            f"no label in this report matched the vocabulary ({len(skipped)} "
+            "label/value pair(s) kept in raw_labels); a file this parser cannot "
+            "name is not an empty result — a terminal set to another language "
+            "exports labels this vocabulary does not hold, so re-export from an "
+            "English terminal or add the spellings to LABELS"
+        )
 
 
 def _store(report: TesterReport, key: str, value: Any) -> None:
@@ -1742,12 +1775,29 @@ def check_forward(
                 f"{label} half history quality is {quality:g}% — gaps in the tick "
                 "or bar history make that curve look better than the data deserves"
             )
-    if not check.rows:
+    # A row exists when *either* half carries the metric, so a non-empty row
+    # list is not the same thing as a metric in common. Comparing a back half
+    # against a report that parsed to nothing used to yield one-sided rows and
+    # then a confident "holds_up" over numbers only one file contained.
+    shared = [
+        row
+        for row in check.rows
+        if row.get("back") is not None and row.get("forward") is not None
+    ]
+    if not shared:
         inconclusive = True
         check.reasons.append(
             "the two reports carry no metric in common — check that both are "
             "testing reports for the same EA"
         )
+    for label, report in (("back", back), ("forward", forward)):
+        if report.metrics:
+            continue
+        inconclusive = True
+        reason = f"the {label} report parsed to no metrics at all"
+        if report.warnings:
+            reason += f" — {report.warnings[0].split(';')[0]}"
+        check.reasons.append(reason)
 
     if degraded:
         check.verdict = "degrades"

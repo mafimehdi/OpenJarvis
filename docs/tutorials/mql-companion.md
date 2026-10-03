@@ -383,9 +383,11 @@ Three behaviours are worth understanding before you trust the output:
 3. **Layout is not assumed.** Labels are matched in a flattened cell stream, so
    the two-column table, a `<br>`-separated column, XML elements, XML
    `name`/`value` pairs, XML attributes and a tab-separated paste all produce
-   the same metrics. A report in a language the vocabulary does not know
-   returns what it found plus a long `missing` list, which is the honest
-   answer.
+   the same metrics. A report in a language the vocabulary does not know keeps
+   the label/value pairs it read in `raw_labels` and warns that nothing
+   matched: a long `missing` list on its own reads downstream as a run with no
+   drawdown and no losses. For the same reason `check_forward()` needs a metric
+   *both* halves carry — one-sided rows are not overlap, and are not a verdict.
 
 Watch `history_quality_pct`: below about 90% the terminal had gaps in its tick
 or bar history, so the equity curve was drawn from less data than it appears to

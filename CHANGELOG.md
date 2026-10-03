@@ -193,7 +193,7 @@ equity curve, trade and deal counts, win and loss percentages, largest and
 average win/loss, longest streaks, plus the test context down to history
 quality. The bridge serves the same data as `mt5_tester_report` and
 `mt5_tester_compare`, and `mt5_tester_run` (only with `--allow-tester`) launches
-the terminal to produce a report. 301 tests in
+the terminal to produce a report. 306 tests in
 `tests/examples/test_tester_report.py` cover it with no MetaTrader and no
 Windows.
 
@@ -227,8 +227,15 @@ pairs, XML attributes and pasted text all yield the same metrics. The vocabulary
 is English labels plus `STAT_*` identifiers, and `build_label_lookup()` raises at
 import time if two aliases would claim one label — that collision is how one
 metric silently takes another's value, and it caught two during development.
-Localized reports return what they can plus a long `missing` list, which is the
-honest answer.
+A report whose labels the vocabulary does not hold — a terminal set to another
+language exports localized labels, and `decode_report_bytes` reads the Cyrillic bytes
+faithfully only for every label to fall outside it — keeps the pairs it read in
+`raw_labels` and warns that nothing matched. A long `missing` list alone is not the
+honest answer it looks like: downstream it reads as a run with no drawdown and no
+losses, and the forward check went further and called it `holds_up`, because a row
+exists when *either* half carries a metric and no comparison rule can fire on a
+number only one file contains. A verdict now needs a metric both halves carry, and a
+half that parsed to nothing is named as the reason.
 
 `--run` uses the mechanism the terminal documents, since the `MetaTrader5`
 package cannot drive the tester: write a `[Tester]` ini and launch

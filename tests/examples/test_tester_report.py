@@ -3551,3 +3551,99 @@ class TestDecodeReportBytesCodePages:
         assert tr.decode_report_bytes(text.encode("utf-8")) == text
         assert tr.decode_report_bytes(text.encode("utf-16")) == text
         assert tr.decode_report_bytes(b"Profit 1850.25") == "Profit 1850.25"
+
+
+class TestUnrecognizedReports:
+    """A file this parser cannot name has to say so, not read as an empty run.
+
+    ``decode_report_bytes`` already speaks cp1251, so a Cyrillic report arrives
+    intact — and then every label falls outside an English vocabulary. What came
+    back was an empty ``metrics`` dict with no warning, which reads downstream as
+    "no drawdown, no losses".
+    """
+
+    BACK = """<html><body><table>
+<tr><td>Period</td><td>2022.01.01 - 2022.12.31</td></tr>
+<tr><td>Total Net Profit</td><td>12 000.00</td></tr>
+<tr><td>Profit Factor</td><td>1.80</td></tr>
+<tr><td>Recovery Factor</td><td>2.50</td></tr>
+<tr><td>Sharpe Ratio</td><td>1.40</td></tr>
+<tr><td>Total Trades</td><td>480</td></tr>
+<tr><td>Equity Drawdown Maximal</td><td>4 800.00 (12.00%)</td></tr>
+</table></body></html>"""
+
+    # The same strategy out of sample, exported by a terminal whose UI language
+    # is Russian — and it lost money.
+    RUSSIAN = """<html><body><table>
+<tr><td>Период</td><td>2023.01.01 - 2023.06.30</td></tr>
+<tr><td>Чистая прибыль</td><td>-8 400.00</td></tr>
+<tr><td>Фактор прибыльности</td><td>0.42</td></tr>
+<tr><td>Коэффициент восстановления</td><td>0.11</td></tr>
+<tr><td>Коэффициент Шарпа</td><td>-0.90</td></tr>
+<tr><td>Всего сделок</td><td>510</td></tr>
+<tr><td>Максимальная просадка по эквити</td><td>19 200.00 (61.00%)</td></tr>
+</table></body></html>"""
+
+    def test_an_unnamed_report_keeps_its_pairs_and_warns(self) -> None:
+        report = tr.parse_html_report(self.RUSSIAN, "forward.htm")
+
+        assert report.metrics == {}
+        assert len(report.raw) == 7, report.raw
+        assert "Фактор прибыльности" in report.raw
+        assert report.raw["Фактор прибыльности"] == "0.42"
+        assert any("matched the vocabulary" in w for w in report.warnings)
+        # The warning leads the model-facing rendering, ahead of the long list
+        # of missing keys: "everything is missing" alone reads as a bad run.
+        assert tr.format_for_prompt(report).splitlines()[0] == "warnings:"
+
+    def test_a_recognized_report_collects_nothing_extra(self) -> None:
+        report = tr.parse_html_report(self.BACK, "back.htm")
+
+        assert report.metrics["profit_factor"] == 1.80
+        assert report.warnings == []
+        assert all(tr._match_label(label) for label in report.raw), report.raw
+
+    def test_a_known_label_after_an_unknown_one_is_still_matched(self) -> None:
+        """Recording an unknown pair must not consume the label that follows."""
+        html = (
+            "<html><body><table>"
+            "<tr><td>Неизвестно</td><td>Profit Factor</td><td>1.80</td></tr>"
+            "</table></body></html>"
+        )
+        report = tr.parse_html_report(html, "mixed.htm")
+
+        assert report.metrics.get("profit_factor") == 1.80
+        assert report.warnings == []
+
+    def test_an_unreadable_forward_half_is_inconclusive(self) -> None:
+        back = tr.parse_html_report(self.BACK, "back.htm")
+        forward = tr.parse_html_report(self.RUSSIAN, "forward.htm")
+
+        check = tr.check_forward(back, forward)
+
+        assert check.available is True
+        assert check.verdict == "inconclusive"
+        assert any("no metric in common" in reason for reason in check.reasons)
+        assert any(
+            "the forward report parsed to no metrics" in reason
+            for reason in check.reasons
+        )
+
+    def test_one_sided_rows_are_not_a_verdict(self) -> None:
+        """A row exists when *either* half carries the metric — that is not overlap.
+
+        This is the shape that used to return ``holds_up``: the readable half
+        supplied every number, no comparison rule could fire on a pair, and
+        "nothing degraded" was reported as "it held up".
+        """
+        back = tr.parse_html_report(self.RUSSIAN, "back.htm")
+        forward = tr.parse_html_report(self.BACK, "forward.htm")
+
+        check = tr.check_forward(back, forward)
+
+        assert check.rows, "the readable half still produces one-sided rows"
+        assert all(row["back"] is None for row in check.rows)
+        assert check.verdict == "inconclusive"
+        assert any(
+            "the back report parsed to no metrics" in reason for reason in check.reasons
+        )
