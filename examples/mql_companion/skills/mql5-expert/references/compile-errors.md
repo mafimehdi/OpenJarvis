@@ -24,7 +24,7 @@ MetaEditor builds — treat the pattern, not the exact text, as the key.
 | `'X' - file not found` / `cannot open include file` | Wrong `/inc` directory, or `#include "..."` for a stdlib header | Compile with `/inc:<data folder>\MQL5`; use `#include <...>` for standard library, `"..."` for your own relative files |
 | `expression not boolean` | Assignment inside `if`, or bitwise `&` instead of `&&` | `==` and `&&` |
 | `'X' - not a class member` | Wrong CTrade/indicator method name | Check the class reference; `CTrade` has `PositionOpen`, `PositionClose`, `PositionModify`, `PositionClosePartial`, `OrderSend`, `Buy`, `Sell` |
-| `array out of range` (runtime) | Indexing a copied buffer before it has enough bars | Check `CopyBuffer(...) < 0` and `BarsCalculated(handle) < 0`; on the first ticks the buffer really is short |
+| `array out of range` (runtime) | Indexing a copied buffer before it has enough bars | Compare the count `CopyBuffer` returns with the count you asked for (`-1` is an error; fewer than requested means the data is not there yet) and check `BarsCalculated(handle) < 0`; on the first ticks the buffer really is short |
 
 ## Trade retcodes (`ENUM_TRADE_RETCODE`)
 
@@ -55,7 +55,8 @@ Printed by `trade.ResultRetcode()` after any CTrade call. Log
 
 | Error | Guard |
 |---|---|
-| `ERR_TRADE_POSITION_NOT_ALLOWED` | Check `TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)` and `MQLInfoInteger(MQL_TRADE_ALLOWED)` before trading |
+| `ERR_TRADE_DISABLED` (4752, "Trading by Expert Advisors prohibited") | Check `TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)` and `MQLInfoInteger(MQL_TRADE_ALLOWED)` before trading |
+| `ERR_TRADE_POSITION_NOT_FOUND` (4753) | The position you selected is gone — re-select by ticket (`PositionSelectByTicket`) and handle the "already closed" path instead of assuming the modify worked |
 | Positions vanishing mid-loop | Iterate `for(int i = PositionsTotal() - 1; i >= 0; i--)` and re-read `PositionGetTicket(i)` each pass |
 | Wrong position touched | Always compare `PositionGetString(POSITION_SYMBOL)` **and** `PositionGetInteger(POSITION_MAGIC)` |
 | Indicator handle invalid after symbol/timeframe change | Recreate handles in `OnInit`, never lazily inside `OnTick` |

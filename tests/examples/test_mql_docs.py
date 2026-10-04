@@ -54,6 +54,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPANION = REPO_ROOT / "examples" / "mql_companion"
 TUTORIAL = REPO_ROOT / "docs" / "tutorials" / "mql-companion.md"
 README = COMPANION / "README.md"
+SKILL_DIR = COMPANION / "skills" / "mql5-expert"
 CONFIG = REPO_ROOT / "configs" / "openjarvis" / "examples" / "mql-assistant.toml"
 
 #: Documents whose command lines belong to this example's own scripts. The
@@ -935,3 +936,156 @@ def test_tutorial_says_memory_index_needs_the_native_backend() -> None:
     assert "MemoryBackendUnavailable" in after, (
         "say what the failure is called, so the traceback is recognizable"
     )
+
+
+# ENUM_TRADE_TRANSACTION_TYPE, complete, from the MQL5 reference:
+# mql5.com/en/docs/constants/tradingconstants/enum_trade_transaction_type
+REAL_TRADE_TRANSACTIONS = frozenset(
+    {
+        "TRADE_TRANSACTION_ORDER_ADD",
+        "TRADE_TRANSACTION_ORDER_UPDATE",
+        "TRADE_TRANSACTION_ORDER_DELETE",
+        "TRADE_TRANSACTION_DEAL_ADD",
+        "TRADE_TRANSACTION_DEAL_UPDATE",
+        "TRADE_TRANSACTION_DEAL_DELETE",
+        "TRADE_TRANSACTION_HISTORY_ADD",
+        "TRADE_TRANSACTION_HISTORY_UPDATE",
+        "TRADE_TRANSACTION_HISTORY_DELETE",
+        "TRADE_TRANSACTION_POSITION",
+        "TRADE_TRANSACTION_REQUEST",
+    }
+)
+
+# Runtime errors, Account/Trade section plus the one the Sleep note cites, from
+# mql5.com/en/docs/constants/errorswarnings/errorcodes
+REAL_RUNTIME_ERRORS = frozenset(
+    {
+        "ERR_SLEEP_ERROR",  # 4020
+        "ERR_ACCOUNT_WRONG_PROPERTY",  # 4701
+        "ERR_TRADE_WRONG_PROPERTY",  # 4751
+        "ERR_TRADE_DISABLED",  # 4752
+        "ERR_TRADE_POSITION_NOT_FOUND",  # 4753
+        "ERR_TRADE_ORDER_NOT_FOUND",  # 4754
+        "ERR_TRADE_DEAL_NOT_FOUND",  # 4755
+        "ERR_TRADE_SEND_FAILED",  # 4756
+        "ERR_TRADE_CALC_FAILED",  # 4758
+    }
+)
+
+# MQL4-only terminal-state functions, mirroring the scorer's pattern below.
+MQL4_ONLY_STATE_FUNCTIONS = (
+    "IsTradeAllowed",
+    "IsTradeContextBusy",
+    "IsConnected",
+    "IsTesting",
+    "IsOptimization",
+    "IsVisualMode",
+    "IsDemo",
+    "IsDllsAllowed",
+)
+
+
+class TestSkillKnowledgeMatchesTheMql5Reference:
+    """The shipped knowledge is checked against the MQL5 reference, not the code.
+
+    Every other test in this file compares the documents with the Python they
+    describe, which cannot catch a document that disagrees with *MQL5*. Reading
+    the skill's instruction and its four references against the API reference
+    found four things a model would have copied straight out:
+
+    * ``TRADE_TRANSACTION_ORDER_STATE`` — no such member. An order changing state
+      is ``TRADE_TRANSACTION_ORDER_UPDATE``, whose documented description covers
+      exactly that (``ORDER_STATE_STARTED`` to ``ORDER_STATE_PLACED``).
+    * ``ERR_TRADE_POSITION_NOT_ALLOWED`` — no such constant; a blend of the real
+      ``ERR_TRADE_DISABLED`` (4752) and ``ERR_TRADE_POSITION_NOT_FOUND`` (4753).
+    * ``INIT_PARAMETERS_INCORRECT`` described as "the terminal retries this one —
+      useful for inputs that depend on data not ready yet". Nothing retries it:
+      the tester does not perform that pass and marks its row red, and too many
+      such rows distort a genetic optimization. The advice pointed at the one
+      workflow this example spends most of its words on.
+    * ``Sleep()`` "ignored in the tester for MQL5 EAs" — that is the MQL4 rule.
+      In MQL5 it suspends the program in the tester too, which is why
+      ``ERR_SLEEP_ERROR`` ("out of test end date after calling Sleep()") exists.
+
+    The first two compile to ``'X' - undeclared identifier``, the top row of the
+    skill's own compile-error table: a file that tells the reader to verify
+    signatures is still copied verbatim by a model with nothing indexed.
+    """
+
+    def _knowledge_files(self) -> List[Path]:
+        return [
+            SKILL_DIR / "SKILL.md",
+            *sorted((SKILL_DIR / "references").glob("*.md")),
+            *sorted((SKILL_DIR / "templates").glob("*.mq5")),
+        ]
+
+    def test_no_invented_mql5_constants(self) -> None:
+        families = {
+            "TRADE_TRANSACTION_": REAL_TRADE_TRANSACTIONS,
+            "ERR_": REAL_RUNTIME_ERRORS,
+        }
+        invented: Dict[str, List[str]] = {}
+        for path in self._knowledge_files():
+            text = path.read_text(encoding="utf-8")
+            for prefix, real in families.items():
+                for token in set(re.findall(rf"\b{prefix}[A-Z0-9_]+\b", text)):
+                    if token not in real:
+                        invented.setdefault(token, []).append(path.name)
+        assert not invented, (
+            "the skill names MQL5 constants that do not exist — check each one "
+            f"against the MQL5 reference before widening these sets: {invented}"
+        )
+
+    def test_the_two_corrected_explanations_stay_corrected(self) -> None:
+        cheatsheet = (SKILL_DIR / "references" / "mql5-api-cheatsheet.md").read_text(
+            encoding="utf-8"
+        )
+        init_note = cheatsheet[cheatsheet.index("`OnInit` return values") :]
+        init_note = init_note[: init_note.index("## Indicators")]
+        assert "nothing retries" in init_note.lower(), (
+            "the note must say plainly that nothing retries "
+            "INIT_PARAMETERS_INCORRECT — the text it replaced claimed the "
+            "terminal retried it and recommended returning it to wait for data"
+        )
+        assert "retries this one" not in init_note
+        assert "red" in init_note and "skip" in init_note, (
+            "say what really happens: the pass is skipped and its row marked red"
+        )
+        transactions = cheatsheet[cheatsheet.index("## Event-driven confirmation") :]
+        assert "TRADE_TRANSACTION_DEAL_ADD" in transactions, (
+            "a position opened or closed by a deal does not raise "
+            "TRADE_TRANSACTION_POSITION; without DEAL_ADD named here a reader "
+            "waits on POSITION for a fill that never fires it"
+        )
+
+        instruction = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        sleep_note = instruction[instruction.index("Never use `Sleep()`") :]
+        sleep_note = sleep_note[: sleep_note.index("\n- ", 5)]
+        assert "ignored in the tester" not in sleep_note, (
+            "that is the MQL4 rule; MQL5 suspends the EA in the tester as well"
+        )
+        assert "ERR_SLEEP_ERROR" in sleep_note
+
+    def test_the_instruction_does_not_recommend_mql4_only_functions(self) -> None:
+        """The instruction used to tell the model to call ``IsTradeAllowed()``.
+
+        That function is MQL4-only — it does not compile in MQL5 — and this
+        branch's own scorer lists it as an MQL4-ism, so the skill built to hunt
+        MQL4-isms was recommending one, and the benchmark would have scored the
+        recommendation as contamination. Naming MQL4 functions is right in
+        ``references/mql4-to-mql5.md``, whose left column is what they are being
+        ported *from*; the instruction the model reads has to be pure MQL5.
+        """
+        from openjarvis.evals.scorers.mql_bench import MQL4_ISM_PATTERNS
+
+        scored = " ".join(pattern for _, pattern in MQL4_ISM_PATTERNS)
+        instruction = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        for name in MQL4_ONLY_STATE_FUNCTIONS:
+            assert name in scored, (
+                f"{name} is no longer scored as an MQL4-ism — this list and the "
+                "scorer's pattern have drifted; update both together"
+            )
+            assert name not in instruction, (
+                f"the instruction names {name}, which is MQL4-only and scored as "
+                "an MQL4-ism; a model following it writes code that cannot compile"
+            )

@@ -65,9 +65,10 @@ Check, in this order, and report findings with line references:
    `OrderClose`/`OrderModify`/`OrderSelect`, `AccountBalance()`,
    `MarketInfo()`, `Time[0]`/`Close[1]` series arrays.
 3. **Indicator handle hygiene** — handles created once in `OnInit`, checked
-   against `INVALID_HANDLE`, released in `OnDeinit`, and `CopyBuffer` results
-   checked for `< 0` (never assume the buffer is full; on the first ticks it
-   is not).
+   against `INVALID_HANDLE`, released in `OnDeinit`, and every `CopyBuffer`
+   return compared with the count asked for: it returns the number of elements
+   copied and `-1` on error, so a bare `< 0` check misses the short copy — which
+   is exactly what the first ticks of a chart give you.
 4. **Series indexing** — after `CopyBuffer` into a dynamic array, call
    `ArraySetAsSeries(arr, true)` before indexing `arr[0]` as "latest bar".
    Off-by-one here silently trades one bar late.
@@ -75,10 +76,11 @@ Check, in this order, and report findings with line references:
    `SYMBOL_VOLUME_MIN`/`MAX`; price normalized to `SYMBOL_DIGITS`; stop
    distance checked against `SYMBOL_TRADE_STOPS_LEVEL`; margin verified with
    `OrderCalcMargin` before sending.
-6. **Robustness** — `IsTradeAllowed()`/`TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)`,
-   requote and requotes handling, `OnTradeTransaction` for fill confirmation
-   rather than assuming success, no unbounded loops over `PositionsTotal()`
-   while modifying positions (iterate backwards).
+6. **Robustness** — `TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)` and
+   `MQLInfoInteger(MQL_TRADE_ALLOWED)` before trading, requote handling,
+   `OnTradeTransaction` for fill confirmation rather than assuming success, no
+   unbounded loops over `PositionsTotal()` while modifying positions (iterate
+   backwards).
 7. **Backtest honesty** — flag anything that cannot be tested: martingale/grid
    recovery without a hard equity stop, `MathSrand`-based logic, dependence on
    tick history that the tester will not reproduce.
@@ -280,8 +282,11 @@ as an agent, build the JSON properly (escaped backslashes are fine there).
   runtime.
 - Never trade on every tick when the strategy is bar-based; use a new-bar
   guard.
-- Never use `Sleep()` in an EA on a real chart (it is ignored in the tester
-  for MQL5 EAs and blocks the tick stream otherwise); use timer or bar events.
+- Never use `Sleep()` in an EA. In MQL5 it really does suspend the program — in
+  the tester too, where a long enough one runs past the test end date
+  (`ERR_SLEEP_ERROR`); the MQL4 rule that the tester ignores `Sleep()` does not
+  carry over. On a chart it freezes the EA's thread, so every tick arriving
+  during the sleep is lost. Use timer or bar events.
 - Never claim backtest results you did not produce. If `mt5_tester_report` is
   available, read the actual report and quote its numbers with their
   `missing`/`warnings`. If it is not, describe the test the user should run in

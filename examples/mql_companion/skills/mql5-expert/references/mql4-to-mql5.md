@@ -40,7 +40,7 @@ The three structural changes that produce ~80% of the work:
 | `IsConnected()` | `TerminalInfoInteger(TERMINAL_CONNECTED)` |
 | `RefreshRates()` | Not needed — prices are read on demand via `SymbolInfoDouble` |
 | `GetLastError()` | Unchanged (still useful around `CopyBuffer` and file ops) |
-| `#property copyright` etc. | Unchanged; `#property strict` is MQL4-only and ignored in MQL5 |
+| `#property copyright` etc. | Unchanged; `#property strict` is MQL4-only — MQL5 has no such property, so drop it when porting |
 
 ## Things that break silently rather than at compile time
 

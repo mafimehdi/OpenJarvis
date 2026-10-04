@@ -32,9 +32,13 @@ int  OnCalculate(const int rates_total, const int prev_calculated,
                  const long &volume[], const int &spread[]) { return(rates_total); }
 ```
 
-`OnInit` return values: `INIT_SUCCEEDED`, `INIT_FAILED`,
-`INIT_PARAMETERS_INCORRECT` (the terminal retries this one — useful for inputs
-that depend on data not ready yet).
+`OnInit` return values: `INIT_SUCCEEDED`; `INIT_FAILED` — the EA is unloaded
+from the chart (an indicator stays but stops receiving events); and
+`INIT_PARAMETERS_INCORRECT`, which nothing retries: in the tester that input set
+is skipped and its row is marked red, so use it to *reject* a parameter set
+during an optimization, not to wait for data that is not there yet. Too many
+rejected sets distort a genetic optimization, which assumes the criterion is
+smooth across the input space.
 
 ## Indicators: handles + CopyBuffer
 
@@ -180,7 +184,8 @@ bool is_london = (dt.hour >= 8 && dt.hour < 17 && dt.day_of_week >= 1 && dt.day_
 bool is_friday = (dt.day_of_week == 5);
 
 datetime series[];
-CopyTime(_Symbol, _Period, 0, 5, series);        // ArraySetAsSeries before indexing
+CopyTime(_Symbol, _Period, 0, 5, series);        // 5 bars; index 0 is the OLDEST
+ArraySetAsSeries(series, true);                  // now series[0] is the newest bar
 ```
 
 New-bar guard (do not trade every tick in a bar strategy):
@@ -220,15 +225,17 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    switch(trans.type)
      {
       case TRADE_TRANSACTION_DEAL_ADD:      break;  // a deal appeared in history
-      case TRADE_TRANSACTION_POSITION:      break;  // a position changed/closed
-      case TRADE_TRANSACTION_ORDER_STATE:   break;  // pending order state changed
+      case TRADE_TRANSACTION_POSITION:      break;  // position changed server-side, NOT by a deal
+      case TRADE_TRANSACTION_ORDER_UPDATE:  break;  // an open order changed: price, SL/TP, state
       case TRADE_TRANSACTION_REQUEST:       break;  // result of our own request
      }
   }
 ```
 
 Prefer this over polling `PositionsTotal()` right after `OrderSend`: the fill
-arrives asynchronously.
+arrives asynchronously. Watch `TRADE_TRANSACTION_DEAL_ADD` for opens and closes:
+a position changed *by a deal* does not raise `TRADE_TRANSACTION_POSITION`, which
+reports only server-side changes made without one (SL/TP, volume).
 
 ## Trailing stop (the version that does not fight the broker)
 
