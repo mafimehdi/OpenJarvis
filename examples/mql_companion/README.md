@@ -640,7 +640,8 @@ and inference instead, and `verify_on_terminal.py` runs the experiments:
 
 ```bash
 python examples/mql_companion/verify_on_terminal.py --list          # what it checks
-python examples/mql_companion/verify_on_terminal.py                 # plan only
+python examples/mql_companion/verify_on_terminal.py                 # plan only;
+                                                                    # off Windows check 0 fails (exit 2) and nothing runs
 python examples/mql_companion/verify_on_terminal.py --yes           # run it
 python examples/mql_companion/verify_on_terminal.py --yes --json verify.json
 python examples/mql_companion/verify_on_terminal.py --yes --with-model4 --with-grace

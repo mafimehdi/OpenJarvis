@@ -38,11 +38,14 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Dict, Iterable, List, Set, Tuple
+from typing import Dict, Iterable, List, Sequence, Set, Tuple
 
 import pytest
 import tomlkit
@@ -464,3 +467,330 @@ def test_readme_table_quotes_every_warning_the_analysis_can_emit() -> None:
         "analyze_optimization warns about things the README's check table does not "
         "list:\n  " + "\n  ".join(undocumented)
     )
+
+
+# --------------------------------------------------------------------------
+# the commands the documents print are commands that work
+# --------------------------------------------------------------------------
+
+
+#: The ten fixed columns of an optimization table, then one column per optimized
+#: input — the header MT5 writes, and the thing the reader sniffs to tell an
+#: optimization table apart from a testing report.
+OPT_HEADER = (
+    "Pass",
+    "Result",
+    "Profit",
+    "Expected Payoff",
+    "Profit Factor",
+    "Recovery Factor",
+    "Sharpe Ratio",
+    "Custom",
+    "Equity DD %",
+    "Trades",
+    "InpFastEMA",
+    "InpSlowEMA",
+    "InpStopLoss",
+    "InpUseFilter",
+)
+
+
+def _optimization_table(
+    rows: Sequence[Sequence[str]], header: Sequence[str] = OPT_HEADER
+) -> str:
+    """An optimization report in the shape the terminal writes it."""
+
+    def cells(values: Sequence[str]) -> str:
+        return "  <Row>" + "".join(f"<Cell>{cell}</Cell>" for cell in values) + "</Row>"
+
+    body = ['<?xml version="1.0" encoding="ANSI"?>', "<Table>", cells(header)]
+    body += [cells(row) for row in rows]
+    body.append("</Table>")
+    return "\n".join(body) + "\n"
+
+
+def _optimization_rows(count: int) -> List[Tuple[str, ...]]:
+    """Rows for the ten fixed columns plus the four inputs ``OPT_HEADER`` names."""
+    rows = []
+    for number in range(1, count + 1):
+        rows.append(
+            (
+                str(number),
+                f"{10500.0 - number * 137.5:.2f}",
+                f"{500.0 - number * 11.5:.2f}",
+                f"{2.5 - number * 0.05:.2f}",
+                f"{1.5 - number * 0.02:.2f}",
+                f"{2.0 - number * 0.03:.2f}",
+                f"{1.0 - number * 0.01:.2f}",
+                "0",
+                f"{10.0 + number * 0.4:.2f}",
+                str(200 - number),
+                str(5 + number % 26),
+                "26",
+                "500",
+                "true",
+            )
+        )
+    return rows
+
+
+#: A testing report with the fields the gates below ask about: 243 trades,
+#: profit factor 1.38, equity drawdown 8.01%, history quality 100%.
+#:
+#: The drawdown rows are asymmetric on purpose, because that is how MT5 writes
+#: them: "Maximal" carries money and percent in one cell (``812.44 (8.01%)``),
+#: "Relative" carries the percent alone. A first version of this fixture made
+#: them symmetrical and the reader answered honestly —
+#: ``equity_drawdown_relative_pct = 812.44 (FAILED <= 15.0)`` — which is the
+#: two-figures-in-one-cell trap the parser exists to handle. Do not tidy it.
+REPORT_HTML = """<html><head><title>MetaTrader 5 Strategy Tester Report</title></head>
+<body><table width="100%" cellspacing="0" cellpadding="4" border="0">
+<tr><td>Expert</td><td>MACD Sample.ex5</td>
+    <td>Symbol</td><td>EURUSD (Euro vs US Dollar)</td></tr>
+<tr><td>Period</td><td>1 Hour (H1)  2024.01.01 00:00 - 2024.06.30 23:59</td>
+    <td>Model</td><td>Every tick</td></tr>
+<tr><td>Initial deposit</td><td>10000.00</td><td>Currency</td><td>USD</td></tr>
+<tr><td>Leverage</td><td>1:100</td><td>History quality, %</td><td>100</td></tr>
+<tr><td>Total Net Profit</td><td>1 234.56</td><td>Total Trades</td><td>243</td></tr>
+<tr><td>Gross Profit</td><td>4 500.00</td><td>Gross Loss</td><td>-3 265.44</td></tr>
+<tr><td>Profit Factor</td><td>1.38</td><td>Sharpe Ratio</td><td>0.86</td></tr>
+<tr><td>Recovery Factor</td><td>1.75</td><td>Expected Payoff</td><td>5.08</td></tr>
+<tr><td>Balance Drawdown Maximal</td><td>705.00 (6.90%)</td>
+    <td>Balance Drawdown Relative</td><td>6.90%</td></tr>
+<tr><td>Equity Drawdown Maximal</td><td>812.44 (8.01%)</td>
+    <td>Equity Drawdown Relative</td><td>8.01%</td></tr>
+<tr><td>Profit Trades (% of total)</td><td>131 (53.91%)</td>
+    <td>Loss Trades (% of total)</td><td>112 (46.09%)</td></tr>
+</table></body></html>
+"""
+
+SET_TEMPLATE = (
+    "; saved on 2026.09.30 12:00\n"
+    "InpFastEMA=12||5||1||30||Y\n"
+    "InpSlowEMA=26||20||5||60||Y\n"
+    "InpStopLoss=500||200||50||1000||Y\n"
+    "InpUseFilter=true||false||0||true||Y\n"
+    "InpLots=0.10||0||0||0||N\n"
+)
+
+
+class TestDocumentedCommandsRun:
+    """Every documented invocation that needs no Windows is executed here.
+
+    Round 11 ran all 22 of them by hand from a clean checkout and recorded what
+    each did; this keeps that result true, and pins the one thing each command's
+    documentation promises — a gate that passes, a summary in the JSON, an ini
+    printed instead of a terminal launched, a `.set` written, a dry run that
+    writes nothing, and the two exit codes the documents publish (2 for a
+    toolchain that is not there, nonzero for ``--latest`` with no data folder).
+    """
+
+    @pytest.fixture()
+    def work(self, tmp_path: Path) -> Path:
+        reports = tmp_path / "reports"
+        reports.mkdir()
+        (reports / "MyEA.htm").write_text(REPORT_HTML, encoding="utf-8")
+        (reports / "v2.htm").write_text(
+            REPORT_HTML.replace("1 234.56", "900.10").replace("243", "180"),
+            encoding="utf-8",
+        )
+        (tmp_path / "opt.xml").write_text(
+            _optimization_table(_optimization_rows(24)), encoding="utf-8"
+        )
+        (tmp_path / "grid.set").write_text(SET_TEMPLATE, encoding="utf-8")
+        return tmp_path
+
+    def _run(self, argv: Sequence[str], **kwargs: object) -> Tuple[int, str]:
+        # noqa: S603 - the documented command line, run from the repository root
+        proc = subprocess.run(
+            [sys.executable, *argv],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONPATH": "src"},
+            **kwargs,  # type: ignore[arg-type]
+        )
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    def test_report_with_ci_gates_passes(self, work: Path) -> None:
+        code, out = self._run(
+            [
+                "examples/mql_companion/tester_report.py",
+                str(work / "reports" / "MyEA.htm"),
+                "--min-profit-factor",
+                "1.3",
+                "--min-trades",
+                "50",
+                "--max-equity-drawdown-pct",
+                "15",
+                "--min-history-quality-pct",
+                "90",
+            ]
+        )
+        assert code == 0, out
+        assert '"passed": true' in out
+
+    def test_prompt_flag_adds_the_compact_summary(self, work: Path) -> None:
+        """``--prompt`` is documented as "a compact summary for a prompt"."""
+        code, out = self._run(
+            [
+                "examples/mql_companion/tester_report.py",
+                "--report",
+                str(work / "reports" / "MyEA.htm"),
+                "--prompt",
+            ]
+        )
+        assert code == 0, out
+        payload = json.loads(out)
+        assert "summary" in payload["reports"][0], (
+            "the summary the flag promises is missing"
+        )
+        assert "net_profit: 1234.56" in payload["reports"][0]["summary"]
+
+    def test_two_reports_are_compared(self, work: Path) -> None:
+        code, out = self._run(
+            [
+                "examples/mql_companion/tester_report.py",
+                str(work / "reports" / "MyEA.htm"),
+                str(work / "reports" / "v2.htm"),
+            ]
+        )
+        assert code == 0, out
+        assert '"reports": [' in out
+
+    def test_forward_half_is_read_with_its_companion(self, work: Path) -> None:
+        code, out = self._run(
+            [
+                "examples/mql_companion/tester_report.py",
+                "--report",
+                str(work / "reports" / "MyEA.htm"),
+                "--forward-report",
+                str(work / "reports" / "v2.htm"),
+                "--prompt",
+            ]
+        )
+        assert code == 0, out
+        assert "forward" in out.lower()
+
+    def test_print_ini_does_not_launch_a_terminal(self, work: Path) -> None:
+        """``--run --print-ini`` prints the config and stops — nothing is started."""
+        code, out = self._run(
+            [
+                "examples/mql_companion/tester_report.py",
+                "--run",
+                "--print-ini",
+                "--expert",
+                "Examples/MACD/MACD Sample",
+                "--model",
+                "4",
+            ]
+        )
+        assert code == 0, out
+        assert "[Tester]" in out and "Expert=" in out
+        assert "terminal64" not in out.split("[Tester]")[-1]
+
+    def test_latest_with_no_data_folder_points_at_search_dir(self) -> None:
+        """The documented escape hatch is named when there is nothing to find."""
+        code, out = self._run(
+            [
+                "examples/mql_companion/tester_report.py",
+                "--latest",
+                "--prompt",
+            ]
+        )
+        assert code != 0, "a machine with no MT5 data folder cannot produce a report"
+        assert "--search-dir" in out
+
+    def test_optimization_ranking_and_grid(self, work: Path) -> None:
+        code, out = self._run(
+            [
+                "examples/mql_companion/tester_report.py",
+                str(work / "opt.xml"),
+                "--rank-by",
+                "recovery_factor",
+                "--top",
+                "20",
+            ]
+        )
+        assert code == 0, out
+        assert "recovery_factor" in out
+
+    def test_set_from_pass_writes_the_file_it_names(self, work: Path) -> None:
+        winner = work / "winner.set"
+        code, out = self._run(
+            [
+                "examples/mql_companion/tester_report.py",
+                str(work / "opt.xml"),
+                "--set",
+                str(work / "grid.set"),
+                "--set-from-pass",
+                "7",
+                "--write-set",
+                str(winner),
+            ]
+        )
+        assert code == 0, out
+        assert winner.is_file(), "the command reported success but wrote no .set"
+        assert "InpFastEMA=" in winner.read_text(encoding="utf-8")
+
+    def test_bridge_stub_answers_a_call(self) -> None:
+        code, out = self._run(
+            [
+                "examples/mql_companion/mt5_mcp_server.py",
+                "--stub",
+                "--call",
+                "mt5_calc",
+                "--args",
+                json.dumps(
+                    {
+                        "symbol": "EURUSD",
+                        "side": "buy",
+                        "volume": 0.5,
+                        "price_close": 1.09,
+                    }
+                ),
+            ]
+        )
+        assert code == 0, out
+        assert "margin" in out
+
+    def test_verifier_lists_its_checks_without_running_them(self) -> None:
+        code, out = self._run(
+            ["examples/mql_companion/verify_on_terminal.py", "--list"]
+        )
+        assert code == 0, out
+        assert "10" in out, "the ten claims REVIEW-NOTES.md lists should all appear"
+
+    def test_skill_dry_run_writes_nothing(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "examples/mql_companion/install_skill.py", "--dry-run"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONPATH": "src", "HOME": str(home)},
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert list(home.rglob("*")) == [], "a --dry-run that writes is not a dry run"
+
+    def test_compile_only_without_a_toolchain_exits_two(self, tmp_path: Path) -> None:
+        """The published exit-code table says 2 = toolchain problem."""
+        source = tmp_path / "MyEA.mq5"
+        source.write_text(
+            (COMPANION / "skills/mql5-expert/templates/ea-template.mq5").read_text(),
+            encoding="utf-8",
+        )
+        code, out = self._run(
+            [
+                "examples/mql_companion/compile_loop.py",
+                "--source",
+                str(source),
+                "--compile-only",
+            ]
+        )
+        assert code == 2, (
+            f"expected the documented toolchain exit code, got {code}: {out}"
+        )

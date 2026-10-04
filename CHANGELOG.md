@@ -317,7 +317,7 @@ the next 19 passes` where the analysis emits `the top pass (14500) is 9.6x …`,
 reader who grepped for it found nothing; the tutorial announced seven signals above a
 list of six; and three warnings — a report too small to judge, a rank metric no pass
 carries, an in-sample winner that lands mid-table out of sample — were emitted by the
-code and documented nowhere.
+code and documented nowhere. The same file also *runs* the twelve documented commands that need no Windows — the CI gates, `--prompt`, a compare, a forward half, `--run --print-ini`, the optimization ranking, `--write-set`, a bridge call over `--stub`, the verifier's `--list`, a skill `--dry-run` that must write nothing, and `--compile-only` with no toolchain, which the published exit-code table says is 2 — and asserts the exit code and the output each one promises.
 
 Two runner bugs surfaced while wiring this up, both of which failed as a timeout on
 a run that had succeeded. `Report=` takes a name and MT5 appends the extension —
