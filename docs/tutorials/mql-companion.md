@@ -516,7 +516,8 @@ to fit the page; the tool prints each pass on one line). Read it and the verdict
 win was never tested beyond 9, and the pass that wins on recovery factor is a different
 one*. Those three facts are what the sorted table does not say.
 
-Seven signals, each answering a question a sorted table cannot:
+Signals, each answering a question a sorted table cannot — the README's check table
+lists every one of them with the exact wording it prints:
 
 - **Too few trades on the winner.** A profit factor computed over 12 trades is
   noise, however large it is. A winner whose trade count the report does not
@@ -542,7 +543,10 @@ Seven signals, each answering a question a sorted table cannot:
   ranking that does not predict the out-of-sample one is a ranking of noise. The
   median only becomes a sentence once at least five passes carry both halves;
   below that the figures are reported and the sample is named as too thin,
-  because a median over one pair describes one pass and not a run.
+  because a median over one pair describes one pass and not a run. And when the
+  pass that won in sample lands mid-table out of sample, that gets its own line:
+  `pass 361 ranked first in sample but 44 of 52 out of sample — do not trade it
+  on the strength of this report`.
 
 ### `.set` files: the part that fails silently
 

@@ -430,12 +430,16 @@ The checks, in the order they save you:
 
 | Check | What it says | Why it matters |
 |---|---|---|
-| Thin best pass | `the best pass traded 12 time(s)` | Every ratio in that row — profit factor, Sharpe, recovery — is noise below ~30 trades |
-| Spike vs plateau | `the top pass is 9.6x the median of the next 19 passes` | A robust setting has neighbours that also work. A lone peak is a lucky run |
+| Thin report | `only 24 pass(es) in this report: too few to say anything about robustness` | A genetic optimization this small has barely searched the space, so nothing below is worth much yet |
+| Thin best pass | `the best pass traded 12 time(s)`, `the best pass reports no trade count, so the thin-sample rule could not be applied` | Every ratio in that row — profit factor, Sharpe, recovery — is noise below ~30 trades. An *absent* count is named too: it is not a cleared check |
+| Ranking nobody could rank | `no pass in this report carries 'sharpe_ratio', so nothing was ranked: "best" is pass 1 in file order` | Rank by a column the report does not carry and every pass sorts as "missing", so `best` is just the first row — for a genetic run, the order passes were *tried* |
+| Spike vs plateau | `the top pass (14500) is 9.6x the median of the next 19 passes` | A robust setting has neighbours that also work. A lone peak is a lucky run |
 | Lonely peak | `only 1 of 31 passes land within 10% of the best result` | Same signal from the other side: nothing near the winner means the market only has to move a little to lose it |
 | Edge-pinned input | `InpStopLoss sits at the stop of its tested range (1000) in 100% of the top passes` | The optimum is *outside* the range you optimized. Widen the `.set` and re-run; do not trade this pass. Needs `--set` for the ranges |
 | Criterion mismatch | `ranked by result the winner is pass 37; ranked by sharpe_ratio it is pass 5` | You optimized one thing and will be judged by another |
+| Forward half too thin | `only 3 pass(es) carry both a back and a forward result — too few to say whether the in-sample ranking holds` | The figures are still reported, but a median over one pair describes one pass and not a run. Five pairs before it becomes a verdict |
 | Forward degradation | `out of sample the median result falls from 14500 to 6950 (52% worse)`, `back-test and forward ranks barely agree (Spearman rho=-1.00)` | The only built-in measurement of overfitting. Needs a forward run (`--forward-mode`) |
+| In-sample winner, out-of-sample nobody | `pass 361 ranked first in sample but 44 of 52 out of sample — do not trade it on the strength of this report` | The forward half's own verdict on the pass you were about to deploy |
 
 Filters default to the five MT5 offers in the Optimization Results tab, and a
 rule only fires on a value the file actually contains: a pass with no trade

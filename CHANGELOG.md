@@ -304,6 +304,21 @@ flagged: either the `.set` was edited after the optimization ran or that report 
 is not that input, and under `--keep-ranges` the file would otherwise contradict itself
 — `InpFastEMA=44||5||1||30||Y` searches a grid that cannot contain its own winner.
 
+The documentation is pinned to that behaviour instead of being left to keep up with
+it. `tests/examples/test_mql_docs.py` reads the tutorial, the example README, the skill
+and the preset config and holds them against the code: every long option they quote
+belongs to one of these CLIs or is classified as another program's, every `mt5_*` name
+they mention is a tool the bridge can register, every name the preset *enables* is
+registered without an opt-in flag (an unregistered name is skipped silently, so enabling
+one would hide the bridge while the config looked complete), and the README's check
+table quotes **every** warning `analyze_optimization` can emit, verbatim. Three drifts
+were live when that was written: the table quoted `the top pass is 9.6x the median of
+the next 19 passes` where the analysis emits `the top pass (14500) is 9.6x …`, so a
+reader who grepped for it found nothing; the tutorial announced seven signals above a
+list of six; and three warnings — a report too small to judge, a rank metric no pass
+carries, an in-sample winner that lands mid-table out of sample — were emitted by the
+code and documented nowhere.
+
 Two runner bugs surfaced while wiring this up, both of which failed as a timeout on
 a run that had succeeded. `Report=` takes a name and MT5 appends the extension —
 `.htm` for a test, `.xml` for an optimization, `.forward.*` for the forward half —
