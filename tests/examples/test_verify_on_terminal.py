@@ -410,7 +410,15 @@ class TestReadOnlyGuard:
             pytest.skip("MetaTrader5 is installed; the skip path cannot run")
         result = verifier.check_10_bridge()
         assert result.status == vt.SKIPPED
-        assert "Windows-only" in result.note
+        # check_10_bridge has two honest skip paths, and the note says which one
+        # happened: the bridge is missing from this tree (a partial checkout), or
+        # the Windows-only MetaTrader5 package is missing from this machine.
+        # Asserting only the second let a tree without the bridge satisfy the
+        # status check while testing nothing about the reason.
+        if importlib.util.find_spec("mt5_mcp_server") is None:
+            assert "bridge not importable" in result.note
+        else:
+            assert "Windows-only" in result.note
 
 
 class TestOptInRuns:
