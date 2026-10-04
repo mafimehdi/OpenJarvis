@@ -294,7 +294,11 @@ void OpenBuy()
         "required": [
             "PositionsTotal",
             "PositionGetTicket",
-            "POSITION_SYMBOL",
+            # Either spelling is correct MQL5: PositionGetSymbol(i) returns the
+            # symbol *and* selects the position, so an answer that filters with
+            # it never names POSITION_SYMBOL and must not be scored as missing
+            # the symbol check.
+            "re:(POSITION_SYMBOL|PositionGetSymbol)",
             "POSITION_MAGIC",
         ],
         "optional": ["i--", "continue"],

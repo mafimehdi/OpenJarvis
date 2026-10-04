@@ -6,6 +6,8 @@ in the default CI job alongside the other coding benchmarks.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from openjarvis.evals.datasets.mql_bench import MQLBenchDataset
@@ -162,3 +164,184 @@ class TestCliWiring:
         scorer = _build_scorer("mql-bench", None, "")
         assert isinstance(scorer, MQLBenchScorer)
         assert scorer.scorer_id == "mql_bench"
+
+
+# --- the MQL5 vocabulary the shipped reference answers use --------------------
+#
+# Every name below was checked against the MQL5 reference manual
+# (mql5.com/en/docs). The scorer cannot do this check: it looks for MQL4
+# spellings and for the substrings a task requires, so an invented MQL5
+# identifier inside a reference answer would score perfectly and still not
+# compile — and the benchmark would be grading real answers against a fiction.
+# Widen these sets only after checking the manual.
+REF_CONSTANTS = frozenset(
+    {
+        "ACCOUNT_EQUITY",
+        "ACCOUNT_TRADE_EXPERT",
+        "DEAL_ENTRY",
+        "DEAL_MAGIC",
+        "DEAL_PROFIT",
+        "DEAL_VOLUME",
+        "ENUM_DEAL_ENTRY",
+        "ENUM_POSITION_TYPE",
+        "ENUM_SYMBOL_TRADE_MODE",
+        "INIT_FAILED",
+        "INIT_PARAMETERS_INCORRECT",
+        "INIT_SUCCEEDED",
+        "INVALID_HANDLE",
+        "MODE_EMA",
+        "MQL_TRADE_ALLOWED",
+        "PERIOD_CURRENT",
+        "POSITION_MAGIC",
+        "POSITION_SL",
+        "POSITION_SYMBOL",
+        "POSITION_TP",
+        "POSITION_TYPE",
+        "POSITION_TYPE_BUY",
+        "POSITION_VOLUME",
+        "PRICE_CLOSE",
+        "SYMBOL_ASK",
+        "SYMBOL_BID",
+        "SYMBOL_DIGITS",
+        "SYMBOL_POINT",
+        "SYMBOL_SPREAD",
+        "SYMBOL_TRADE_MODE",
+        "SYMBOL_TRADE_MODE_FULL",
+        "SYMBOL_TRADE_STOPS_LEVEL",
+        "SYMBOL_TRADE_TICK_SIZE",
+        "SYMBOL_TRADE_TICK_VALUE",
+        "SYMBOL_VOLUME_MAX",
+        "SYMBOL_VOLUME_MIN",
+        "SYMBOL_VOLUME_STEP",
+        "TERMINAL_TRADE_ALLOWED",
+        "TRADE_TRANSACTION_DEAL_ADD",
+    }
+)
+REF_PREDEFINED = frozenset({"_Symbol"})
+REF_GLOBAL_FUNCTIONS = frozenset(
+    {
+        "AccountInfoDouble",
+        "AccountInfoInteger",
+        "ArraySize",
+        "BarsCalculated",
+        "CopyBuffer",
+        "EnumToString",
+        "GetLastError",
+        "HistoryDealGetDouble",
+        "HistoryDealGetInteger",
+        "HistoryDealSelect",
+        "MQLInfoInteger",
+        "MathFloor",
+        "MathMax",
+        "MathMin",
+        "NormalizeDouble",
+        "PositionGetDouble",
+        "PositionGetInteger",
+        "PositionGetString",
+        "PositionGetTicket",
+        "PositionSelectByTicket",
+        "PositionsTotal",
+        "Print",
+        "PrintFormat",
+        "SymbolInfoDouble",
+        "SymbolInfoInteger",
+        "TerminalInfoInteger",
+        "TimeCurrent",
+        "TimeToStruct",
+        "iMA",
+        "iTime",
+    }
+)
+# Methods of CTrade. These exist only as members of that class, so calling one
+# bare — `PositionModify(ticket, sl, tp)` — is an undeclared identifier, and the
+# real globals that look like it (`PositionGetDouble`, `PositionSelectByTicket`)
+# are what make the mistake easy to write and hard to notice.
+REF_CTRADE_METHODS = frozenset(
+    {
+        "Buy",
+        "PositionClosePartial",
+        "PositionModify",
+        "ResultRetcode",
+        "ResultRetcodeDescription",
+        "SetDeviationInPoints",
+        "SetExpertMagicNumber",
+        "SetTypeFillingBySymbol",
+    }
+)
+MQL_KEYWORDS = frozenset(
+    {
+        "if",
+        "for",
+        "while",
+        "switch",
+        "return",
+        "sizeof",
+        "else",
+        "case",
+        "do",
+        "break",
+        "continue",
+    }
+)
+
+
+def _code_only(text: str) -> str:
+    """Strip string literals and line comments so prose cannot pose as code."""
+    text = re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+class TestReferencesAreRealMql5:
+    """The reference answers checked against the language, not against the scorer.
+
+    ``test_reference_is_correct`` (in ``tests/evals/scorers/``) proves every
+    reference satisfies its own task, which is a closed loop: a reference can
+    satisfy a task and still not compile, because nothing in that loop knows
+    MQL5. Round 13 found the same class of error in the skill's cheatsheet — two
+    constants that do not exist, in a file the model is told to copy. These tests
+    supply the missing side for the twelve answers the benchmark grades against.
+    """
+
+    def _references(self, loaded: MQLBenchDataset) -> list[tuple[str, str]]:
+        return [(r.record_id, _code_only(r.reference)) for r in loaded.iter_records()]
+
+    def test_constants_and_predefined_variables_exist(
+        self, loaded: MQLBenchDataset
+    ) -> None:
+        unknown: dict[str, list[str]] = {}
+        for record_id, code in self._references(loaded):
+            constants = set(re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", code))
+            predefined = set(re.findall(r"\b_[A-Za-z]\w*\b", code))
+            for name in (constants - REF_CONSTANTS) | (predefined - REF_PREDEFINED):
+                unknown.setdefault(name, []).append(record_id)
+        assert not unknown, (
+            "a reference answer names an MQL5 constant or predefined variable "
+            "that does not exist; verify it against the reference manual before "
+            f"widening the sets: {unknown}"
+        )
+
+    def test_every_call_is_a_real_global_or_a_method_on_an_object(
+        self, loaded: MQLBenchDataset
+    ) -> None:
+        unknown: dict[str, list[str]] = {}
+        for record_id, code in self._references(loaded):
+            local = {
+                name
+                for name in re.findall(r"\b([A-Za-z_]\w*)\s*\([^;{)]*\)\s*\{", code)
+                if name not in MQL_KEYWORDS
+            }
+            bare = {
+                name
+                for name in re.findall(r"(?<![.\w_])([A-Za-z_]\w*)\s*\(", code)
+                if name not in MQL_KEYWORDS and name not in local
+            }
+            for name in bare - REF_GLOBAL_FUNCTIONS:
+                unknown.setdefault(name, []).append(record_id)
+            for name in set(re.findall(r"\.\s*([A-Za-z_]\w*)\s*\(", code)):
+                if name not in REF_CTRADE_METHODS:
+                    unknown.setdefault(f".{name}()", []).append(record_id)
+        assert not unknown, (
+            "a reference answer calls something that is not an MQL5 global "
+            "function or a known CTrade method — a bare `PositionModify()` is the "
+            f"usual shape of this; verify against the manual first: {unknown}"
+        )

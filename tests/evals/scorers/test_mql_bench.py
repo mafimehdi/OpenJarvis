@@ -71,6 +71,51 @@ class TestReferenceAnswersPass:
         assert meta["score"] >= 0.85
 
 
+class TestAlternativeCorrectAnswersPass:
+    """A required token has to be something a correct answer *cannot avoid*.
+
+    `count-own-positions` used to require the literal `POSITION_SYMBOL`. But
+    `PositionGetSymbol(i)` is documented as returning the symbol **and**
+    selecting the position for the `PositionGet*` calls that follow, so an answer
+    can filter by symbol without ever naming the property — and the scorer failed
+    a correct answer for it, which is the same mistake in the other direction
+    from an invented constant: the benchmark grading real MQL5 against something
+    narrower than the language. The check is now
+    `re:(POSITION_SYMBOL|PositionGetSymbol)`; this test keeps the alternative
+    spelling admissible, and the shipped reference (which uses the property) is
+    still covered by TestReferenceAnswersPass above.
+    """
+
+    ANSWER = """int CountOwnPositions(const ulong magic)
+  {
+   int total = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      // PositionGetSymbol selects the position it names, so the property reads
+      // below refer to this one.
+      if(PositionGetSymbol(i) != _Symbol)
+         continue;
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != magic)
+         continue;
+      total++;
+     }
+   return(total);
+  }"""
+
+    def test_symbol_filter_via_position_get_symbol_scores_correct(
+        self, scorer: MQLBenchScorer, records: dict[str, EvalRecord]
+    ) -> None:
+        record = records["count-own-positions"]
+        is_correct, meta = scorer.score(record, _fenced(self.ANSWER))
+        assert meta["missing_required"] == []
+        assert meta["mql4_isms"] == []
+        assert is_correct is True
+        assert meta["score"] >= 0.85
+
+
 class TestMql4Detection:
     def test_mql4_answer_fails_and_is_flagged(
         self, scorer: MQLBenchScorer, records: dict[str, EvalRecord]
