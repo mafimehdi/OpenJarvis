@@ -67,13 +67,13 @@ stack with `mss`/`Pillow` fallbacks on other platforms. Adds the
 
 **MQL Companion — Expert Advisor development for MetaTrader.**
 `examples/mql_companion/` adds a compile-in-the-loop fixer for MQL4/MQL5 sources,
-an installable `mql5-expert` skill, an `mql-assistant` config preset, and
-`mql-bench`, a structural benchmark for choosing a model that writes MQL5 instead
-of MQL4. MQL5 is low-resource for LLMs and the characteristic failure of a small
-local model is not a syntax slip but confidently emitting MQL4 — a bare `Ask`/`Bid`,
-an eleven-argument `OrderSend`, `Close[1]` — which either fails to compile or,
-worse, compiles and trades wrongly. So the loop ends where the authority is: the
-compiler.
+an installable `mql5-expert` skill, an `mql-assistant` config preset registered
+with `jarvis init --preset`, and `mql-bench`, a structural benchmark for choosing
+a model that writes MQL5 instead of MQL4. MQL5 is low-resource for LLMs and the
+characteristic failure of a small local model is not a syntax slip but
+confidently emitting MQL4 — a bare `Ask`/`Bid`, an eleven-argument `OrderSend`,
+`Close[1]` — which either fails to compile or, worse, compiles and trades
+wrongly. So the loop ends where the authority is: the compiler.
 
 `metaeditor.py` drives MetaEditor's command line (`/compile` `/inc` `/log` `/s`),
 the only MQL compiler MetaQuotes still ships. It locates the binary through

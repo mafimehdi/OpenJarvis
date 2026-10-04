@@ -794,3 +794,144 @@ class TestDocumentedCommandsRun:
         assert code == 2, (
             f"expected the documented toolchain exit code, got {code}: {out}"
         )
+
+
+CLI_BOOTSTRAP = "from openjarvis.cli import main; main()"
+
+
+class TestDocumentedJarvisCommandsRun:
+    """The ``jarvis`` half of the quick start, executed rather than trusted.
+
+    Everything between "clone the repo" and "ask the agent something" is printed
+    as ``jarvis ...`` in the README, the tutorial and the preset's own header,
+    and none of it needs a model — so none of it had an excuse to stay
+    unexecuted. Executing it found a real break: ``jarvis init --preset
+    mql-assistant`` was rejected by a hardcoded ``click.Choice`` list while the
+    preset file shipped and loaded cleanly. That is the first command the example
+    tells you to run, and a test that only checked the file could not see it;
+    ``tests/core/test_preset_configs.py`` now pins the general rule and these
+    pin the example's own walk through it.
+    """
+
+    def _jarvis(self, args: Sequence[str], home: Path) -> Tuple[int, str]:
+        """Run the console script the only way a source checkout can.
+
+        ``jarvis`` is on PATH after an install, but the documented commands are
+        what a fresh clone is told to type, so this bootstraps the entry point
+        pyproject names for it (``openjarvis.cli:main``).
+        """
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", CLI_BOOTSTRAP, *args],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env={
+                **os.environ,
+                "PYTHONPATH": "src",
+                "HOME": str(home),
+                # OPENJARVIS_HOME outranks HOME (core/paths.py), and conftest
+                # points it at one shared dir — left alone, these tests would
+                # write the example's config and skill on top of every other
+                # test's home.
+                "OPENJARVIS_HOME": str(home),
+            },
+        )
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    def test_init_preset_installs_the_config_the_docs_promise(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        code, out = self._jarvis(["init", "--preset", "mql-assistant", "--force"], home)
+        assert code == 0, out
+        # init announces where it wrote; believe that only once the file is
+        # really there, and really inside the home this test handed it.
+        announced = re.search(r"installed to (\S+)", re.sub(r"\s+", " ", out))
+        assert announced, f"init did not say where it wrote: {out}"
+        config = Path(announced.group(1))
+        assert config.is_file(), f"announced {config} but nothing is there"
+        assert home in config.parents, f"init wrote outside its home: {config}"
+        text = config.read_text(encoding="utf-8")
+        # The preset exists to turn the bridge's reader tools on; a config that
+        # did not name them would leave the agent unable to reach the terminal,
+        # which is the entire point of the example.
+        for tool in (
+            "mt5_tester_report",
+            "mt5_tester_compare",
+            "mt5_tester_optimization",
+            "mt5_tester_forward_check",
+        ):
+            assert f'"{tool}"' in text, f"{tool} is not enabled by the preset"
+        assert "mql5-expert" in text
+        # Installing a preset must not quietly arm the two tools that can move
+        # money or launch the terminal: they ship commented, behind bridge flags.
+        for opt_in in ("mt5_order_send", "mt5_tester_run"):
+            enabled = [
+                line
+                for line in text.splitlines()
+                if f'"{opt_in}"' in line and not line.lstrip().startswith("#")
+            ]
+            assert not enabled, f"{opt_in} became live in the installed config"
+
+    def test_the_skill_installs_lists_and_runs_without_a_model(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "examples/mql_companion/install_skill.py"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={
+                **os.environ,
+                "PYTHONPATH": "src",
+                "HOME": str(home),
+                "OPENJARVIS_HOME": str(home),
+            },
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        installed = home / "skills" / "local" / "mql5-expert"
+        assert installed.is_dir(), "the real install must place the skill"
+
+        code, out = self._jarvis(["skill", "list"], home)
+        assert code == 0, out
+        assert "mql5-expert" in out, "README: `jarvis skill list  # -> mql5-expert`"
+
+        # `skill run` is the documented next line and needs no engine: the two
+        # steps are file_read then think, so what comes back is the rendered
+        # review instruction, not a model answer.
+        template = (
+            COMPANION / "skills" / "mql5-expert" / "templates" / "ea-template.mq5"
+        )
+        code, out = self._jarvis(
+            ["skill", "run", "mql5-expert", "-a", f"file_path={template}"], home
+        )
+        assert code == 0, out
+        assert "Success" in out, out
+        assert "MQL4-isms" in out, (
+            "the rendered checklist should name the file it was pointed at"
+        )
+
+
+def test_tutorial_says_memory_index_needs_the_native_backend() -> None:
+    """The one documented command that cannot run on a plain Python install.
+
+    ``jarvis memory index ./mql5-reference/`` dies with
+    ``MemoryBackendUnavailable`` when the native ``openjarvis_rust`` extension
+    was never built — a traceback at the exact point where the tutorial promises
+    the agent "stops guessing signatures". The note is pinned so the promise
+    cannot outlive its prerequisite again.
+    """
+    text = TUTORIAL.read_text(encoding="utf-8")
+    command_at = text.index("jarvis memory index ./mql5-reference/")
+    after = text[command_at : command_at + 1200]
+    assert "openjarvis_rust" in after, (
+        "the tutorial hands out `memory index` without naming the native backend"
+    )
+    assert "MemoryBackendUnavailable" in after, (
+        "say what the failure is called, so the traceback is recognizable"
+    )

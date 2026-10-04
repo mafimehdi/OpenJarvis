@@ -167,6 +167,14 @@ jarvis memory index ./mql5-reference/
 jarvis ask --agent native_react "Add an ATR-based trailing stop to MyEA.mq5"
 ```
 
+> **`memory index` needs the native memory backend.** Indexing writes through
+> `openjarvis_rust`, so a checkout that never built the extension stops with
+> `MemoryBackendUnavailable` and a traceback that tells you how to build it
+> (`uv run maturin develop -m rust/crates/openjarvis-python/Cargo.toml`, rustc
+> >= 1.88). It is the only command on this page with that requirement: the
+> skill, `tester_report.py`, and the MCP bridge all run on a plain Python
+> install.
+
 Or point the loop at the preset without replacing your global config:
 
 ```bash title="Terminal"

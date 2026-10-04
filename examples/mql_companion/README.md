@@ -105,6 +105,12 @@ jarvis skill run mql5-expert -a file_path=MyEA.mq5
 > starts. Pass `C:/Users/me/MyEA.mq5` instead. MetaEditor itself accepts either
 > separator — only this argument is picky.
 
+None of the four commands above needs a model. `install_skill.py` copies the
+skill into `~/.openjarvis/skills/local/mql5-expert`, `skill list` shows it, and
+`skill run` executes the pipeline's two steps (`file_read`, then `think`) and
+prints the rendered review instruction — the engine only matters from
+`jarvis ask` onwards.
+
 ### 5. Pick a model with the benchmark
 
 ```bash
