@@ -2743,13 +2743,16 @@ def build_tools(
                             "portable": _bool("Pass /portable to the terminal."),
                             "forward_mode": _int(
                                 "Split the period and re-run on the far side: 0 "
-                                "off, otherwise the terminal's Forward setting. "
-                                "The run then returns `forward` and "
-                                "`forward_check` with a holds_up / degrades / "
-                                "inconclusive verdict."
+                                "off, 1 = 1/2 of the period, 2 = 1/3, 3 = 1/4, "
+                                "4 = custom (set forward_date). The run then "
+                                "returns `forward` and `forward_check` with a "
+                                "holds_up / degrades / inconclusive verdict. In "
+                                "an optimization MT5 forward-runs only the best "
+                                "10% (slow complete) or 25% (genetic) of passes."
                             ),
                             "forward_date": _s(
-                                "Custom split date, YYYY.MM.DD (with forward_mode)."
+                                "Custom split date, YYYY.MM.DD. MT5 reads it "
+                                "only with forward_mode=4."
                             ),
                             "min_forward_trades": _int(
                                 "Trades a half needs for a forward verdict "

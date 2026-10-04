@@ -58,6 +58,27 @@ table is often not the pass you want:
 | 4 | Recovery factor max | Balance × recovery factor |
 | 5 | Sharpe ratio max | Balance × Sharpe |
 | 6 | Custom | `OnTester()` — the EA decides |
+| 7 | Complex criterion max | An integral measure: it ranks progressively by number of deals, then expected payoff, recovery factor, drawdown and Sharpe |
+
+MetaQuotes documents the criterion as "required only for the genetic algorithm"
+— a slow complete run tests every combination regardless, so the criterion there
+decides the `Result` column and the sort order, not which passes get run.
+Criterion 7 is the "Complex Criterion max" the Optimization Types page
+describes; the config-file documentation lists it as `7 — the maximum of complex
+criterion`.
+
+**The `Maximizes` column above is the config-file documentation's, and that page
+has not kept up with the terminal.** Build 2530 changed the criteria that mixed
+two variables: "Now, the criteria only take into account the second variable and
+ignore the balance" — Balance + Maximum Profitability became Maximum
+Profitability, and the same for expected payoff, drawdown, recovery factor and
+Sharpe ratio (MetaQuotes' release notes for that build). So on any current build
+the `Result` column *is* the metric — a profit factor of 1.4, not
+balance × 1.4 — and the product form survives only in the older wording. Which
+one a report follows shows in the numbers: a `Result` column in the same range as
+`Profit Factor` is a post-2530 run, one in the thousands is not. Comparing
+`Result` across two reports from builds either side of 2530 compares different
+quantities.
 
 ## What the analysis checks, and what to do
 
@@ -72,9 +93,10 @@ table is often not the pass you want:
 | `forward` + `median_degradation_pct` | Out-of-sample is worse than in-sample | Quote the forward numbers, not the back ones |
 | `spearman_back_vs_forward` near 0 | In-sample rank does not predict out-of-sample rank | Selecting the best pass was close to selecting at random |
 
-The default filters are the five MT5 offers in its own Optimization Results tab:
-no trades, no profit, drawdown over 50%, recovery factor under 1, Sharpe under
-0.5. A rule fires only on a value the file actually contains — a pass with no
+The default filters are the five MT5 offers in its own Optimization Results tab —
+they arrived in build 2530, whose release notes list them as passes without
+trades, loss-making passes, drawdown greater than 50%, recovery factor less than
+1 and Sharpe ratio less than 0.5. A rule fires only on a value the file actually contains — a pass with no
 trade count is not dropped for having a bad one.
 
 ## `.set` file format
@@ -104,8 +126,13 @@ InpUseTrailing=true||false||0||true||N
   round-tripped into the terminal, so silently losing a line changes the EA.
 
 **Where the file must live:** `ExpertParameters=` takes a *file name* that MT5
-resolves inside `<MT5 data folder>\MQL5\Profiles\Tester\`. A full path does not
-work. If no `.set` is found, MT5 does not optimize at all — it loads the EA's
+resolves inside `MQL5\Profiles\Tester\`. MetaQuotes' wording for that folder is
+"the platform installation directory"; in portable mode the installation
+directory *is* the data folder, and in the normal (main) mode the profiles are
+editable files, which the same help page puts in the data folder. Rather than
+reason about which mode a machine is in, open **File → Open Data Folder** in the
+terminal and put the `.set` next to the ones already in `MQL5\Profiles\Tester`.
+A full path does not work. If no `.set` is found, MT5 does not optimize at all — it loads the EA's
 compiled defaults and reports "Optimization is not possible". With no
 `ExpertParameters` at all it falls back to
 `MQL5\Profiles\Tester\<EA name>.set`.
@@ -119,20 +146,29 @@ optimization around the winner.
 
 ## ini keys for an optimization run
 
+The values below are MetaQuotes' own, from the terminal help's start-up options
+(`metatrader5.com/en/terminal/help/start_advanced/start`) and the optimization
+pages it links to. `tester_report.py` keeps the same two tables as
+`TESTER_MODELS` and `OPTIMIZATION_MODES` — if this page and that code disagree,
+one of them has drifted.
+
 | Key | Notes |
 |---|---|
 | `Expert`, `ExpertParameters` | EA name; `.set` **name** resolved in `Profiles\Tester` |
 | `Symbol`, `Period`, `FromDate`, `ToDate` | Period as `M1`/`H1`/`D1`…; dates as `YYYY.MM.DD` |
-| `Model` | 0–4; 4 = "Every tick based on real ticks" (slowest, and it freezes the terminal UI until it finishes) |
-| `Optimization` | 0 = off, 1 = slow complete, 2 = genetic, 3 = all symbols |
-| `OptimizationCriterion` | See the table above |
-| `ExecutionMode` | 0 = ideal, −1 = random, `>0` = fixed delay in ms (≤ 600000) |
-| `ForwardMode`, `ForwardDate` | 0 = off; other values are the terminal's Forward splits, `ForwardDate` is a custom date. The exact integer↔split mapping is not documented — read it back from a run the terminal wrote |
+| `Login` | An account number the EA can read through `AccountInfoInteger`. It does not log the terminal in |
+| `Model` | 0 every tick · 1 one-minute OHLC · 2 open prices only · 3 math calculations · 4 every tick based on real ticks. MetaQuotes calls **0** "the most accurate but the slowest"; 4 replays recorded broker ticks and its *first* run on a symbol spends a long time downloading them. 3 downloads no history and calls only `OnInit`/`OnTester`/`OnDeinit` |
+| `Optimization` | 0 = off · 1 = slow complete · 2 = fast genetic · 3 = all symbols in Market Watch. With 3 only the main symbol changes per pass — inputs are not swept, and the MQL5 Cloud Network is not used |
+| `OptimizationCriterion` | 0–7; see the table above |
+| `ExecutionMode` | 0 = no delay (what the help calls "ideal" conditions) · −1 = random delay · `>0` = fixed delay in ms (≤ 600000) |
+| `ForwardMode`, `ForwardDate` | 0 = off · 1 = 1/2 of the period · 2 = 1/3 · 3 = 1/4 · 4 = a custom split that takes its start date from `ForwardDate`, which is read only when `ForwardMode=4` |
 | `Report`, `ReplaceReport` | Name without extension; `ReplaceReport=1` overwrites |
 | `ShutdownTerminal` | 1 = close MT5 when the run ends (the terminal exits *after* writing the report) |
 | `Deposit`, `Currency`, `Leverage` | Account context |
 | `UseLocal`, `UseRemote`, `UseCloud` | Where passes are computed |
-| `ProfitInPips`, `Visual`, `Port`, `Dates` | Report and UI details |
+| `ProfitInPips` | **Not a display setting.** Calculating profit in pips skips the conversion into the deposit currency — and with it swap and commission — and margin is not controlled. MetaQuotes: "only use it for quick and rough strategy estimation". A report from such a run is not comparable with one from a normal run |
+| `Visual`, `Port` | UI and agent details |
+| `Dates` | Seen in ini files the terminal wrote; not in MetaQuotes' list, so do not rely on it |
 
 ## Grid size
 
@@ -152,6 +188,17 @@ this fit?".
 |---|---|
 | Single test with `ForwardMode` | `<name>.htm` and `<name>.forward.htm` |
 | Optimization with `ForwardMode` | one `<name>.xml` whose table gains `Back Result` and `Forward Result` columns |
+
+**Not every pass gets a forward number.** In a forward *optimization* MT5
+optimizes on the first part of the period, then re-runs only the best **10%** of
+passes (slow complete) or **25%** (genetic) on the forward part. So those two
+columns are populated for a slice the platform picked *because it already won in
+sample*, and `median_degradation_pct` and `spearman_back_vs_forward` describe
+that slice rather than the run — a rank correlation over the top 10% has very
+little in-sample spread left to correlate. `analyze_optimization` reports how
+many passes it could pair (`forward.passes` against `forward.total_passes`) and
+warns when that is a fraction of the table; quote the forward figures as a
+statement about the winners, not about the strategy.
 
 The forward file is matched **by name**: a `.forward.` report from another run in
 the same folder is not this run's out-of-sample half, and pairing them would

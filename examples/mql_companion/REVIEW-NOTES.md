@@ -10,9 +10,11 @@ docs, and the shortest way to settle it on Windows (or Wine). Ordered by how muc
 answer would change behaviour.
 
 Nothing here is a known defect. It is a list of claims we could not check from
-Linux — except item 6, which `verify_on_terminal.py` settled on its first run and
-which is kept here because the fix still wants one real report from a non-English
-terminal.
+Linux — with two exceptions. Item 6 was settled by `verify_on_terminal.py` on its
+first run and is kept here because the fix still wants one real report from a
+non-English terminal. Item 1 turned out to be documented by MetaQuotes after all,
+so its check now compares a build against the documentation instead of trying to
+discover the mapping; one narrower assumption inside it is still open.
 
 ## One command instead of ten experiments
 
@@ -35,27 +37,59 @@ names in `READ_ONLY_TOOLS`, and any other name raises. The report ends with a
 
 ---
 
-## 1. `ForwardMode` integer ↔ split mapping
+## 1. `ForwardMode` integer ↔ split mapping — documented, so the check compares
 
-**Assumption.** `0` turns the forward half off; any other value selects one of the
-splits in the terminal's *Forward* dropdown; `ForwardDate` overrides with a custom
-date. The **exact integer for each split is not documented** by MetaQuotes and is not
-guessed anywhere in this repo.
+**Documented.** MetaQuotes' start-up options list the integers outright:
+"ForwardMode — forward testing mode (0 — off, 1 — 1/2 of the testing period, 2 — 1/3 of
+the testing period, 3 — 1/4 of the testing period, 4 — custom interval specified using
+the ForwardDate parameter)". The Strategy Optimization page says the same thing from
+the UI side ("a half, one third, one fourth or a custom period") and adds the part that
+changes how a report reads: after optimizing on the first part of the period, **10% of
+the best runs (full search) or 25% (genetic)** are re-tested on the forward part. So in
+a forward optimization the `Forward Result` column is populated for a slice the platform
+selected *because those passes already won in sample*.
 
-**Where it lives.** Deliberately neutral wording:
+This note used to say the exact integers were not documented and that nothing here
+guessed them. That was wrong, and the repo already relied on the documented meaning:
+`tester_ini_warnings` warns that `ForwardDate` is read only with `ForwardMode=4`, which
+is the same sentence quoted above.
 
-- `skills/mql5-expert/references/optimization.md` — the ini-key table says the mapping
-  is undocumented and tells the reader to read it back from a run.
-- `tester_report.py` — `--forward-mode` passes the integer through untouched and only
-  checks that it is a non-negative int.
+**Where it lives.**
 
-**How to settle.** Run one optimization twice over a period whose midpoint you know
-(e.g. `2024.01.01`–`2024.12.31`) with `ForwardMode=1` and `ForwardMode=2`. Compare the
-optimization start/end dates the terminal logs in its Journal against the *Forward*
-dropdown labels.
+- `skills/mql5-expert/references/optimization.md` — the ini-key table carries the
+  mapping, and the forward section states the 10%/25% rule and what it does to
+  `median_degradation_pct` and `spearman_back_vs_forward`.
+- `tester_report.py` — the `build_tester_ini` docstring, `--forward-mode`'s help and the
+  MCP `forward_mode` description all name the integers; `analyze_optimization` reports
+  `forward.passes` against `forward.total_passes` and warns when that is a fraction of
+  the table. The integer itself is still passed through untouched: no code branches on
+  1, 2 or 3.
+- `verify_on_terminal.py` — `DOCUMENTED_FORWARD_SHARE` holds the three shares and
+  `_split_line` labels each observed split `matches` or `differs from` the documented
+  one, so the check compares instead of only collecting.
 
-**If wrong.** Only the docs change — add the table. No code depends on the meaning of
-the integer.
+**How to check it on a machine.** `verify_on_terminal.py --yes --only 1` runs a single
+test per mode over a period whose midpoint is known and prints, for each mode, the dates
+each half actually reports beside the documented share.
+
+**If a build disagrees.** The observed dates win for that build: paste the `mode=` lines
+into the pull request and keep both readings with the build that produced each. Nothing
+else moves, because no code depends on the integer beyond `4`.
+
+**Still an assumption — empty cells versus zeros.** A `Forward Result` cell MT5 leaves
+empty parses as `None` and is excluded, so partial coverage is safe as written. But if a
+build writes `0` into the cells of passes it never re-ran, those zeros are
+indistinguishable from results: every pass would appear to lose its whole back result
+out of sample, and `median_degradation_pct` would read 100%. `analyze_optimization`
+cannot tell the two apart from the file alone, so it warns when *every* forward value in
+the table is exactly 0.
+
+Settling that one needs a forward *optimization* report, which no current check runs
+(check 9 optimizes without a forward split): run one with `ForwardMode=1`, then compare
+how many `Forward Result` cells the XML populates against how many rows the terminal's
+Forward Results tab shows. Same count with the rest empty means the reader is right; a
+`0` where the tab shows nothing means the analysis has to treat 0 as missing whenever
+coverage is partial.
 
 ---
 

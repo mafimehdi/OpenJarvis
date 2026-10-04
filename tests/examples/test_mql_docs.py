@@ -45,7 +45,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Dict, Iterable, List, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
 
 import pytest
 import tomlkit
@@ -1089,3 +1089,151 @@ class TestSkillKnowledgeMatchesTheMql5Reference:
                 f"the instruction names {name}, which is MQL4-only and scored as "
                 "an MQL4-ism; a model following it writes code that cannot compile"
             )
+
+
+# --------------------------------------------------------------------------
+# the platform's own values, on every surface a reader or a model picks from
+# --------------------------------------------------------------------------
+
+OPTIMIZATION_REFERENCE = SKILL_DIR / "references" / "optimization.md"
+REVIEW_NOTES = COMPANION / "REVIEW-NOTES.md"
+SKILL = SKILL_DIR / "SKILL.md"
+VERIFY_SCRIPT = COMPANION / "verify_on_terminal.py"
+TESTER_SCRIPT = COMPANION / "tester_report.py"
+
+
+def _tester_cli_help(option: str) -> str:
+    """The help a user actually reads for one ``tester_report.py`` option."""
+    for param in tester_report.main.params:
+        if option in getattr(param, "opts", ()):
+            return str(param.help or "")
+    raise AssertionError(f"tester_report.py has no {option} option")
+
+
+def _tester_run_schema() -> Dict[str, Any]:
+    """``mt5_tester_run``'s published input schema — the text a model reads."""
+    tools = {
+        tool.name: tool
+        for tool in mt5_mcp_server.build_tools(None, allow_tester_run=True)
+    }
+    assert "mt5_tester_run" in tools, "the opt-in tester-run tool is missing"
+    return tools["mt5_tester_run"].schema["properties"]
+
+
+def _forward_mode_surfaces() -> List[Tuple[str, str]]:
+    """Every place a ``ForwardMode`` integer gets chosen.
+
+    MetaQuotes documents all five values ("0 — off, 1 — 1/2 of the testing
+    period, 2 — 1/3 ..., 3 — 1/4 ..., 4 — custom interval specified using the
+    ForwardDate parameter"), and the repo already depended on one of them:
+    ``tester_ini_warnings`` warns that ``ForwardDate`` is read only with
+    ``ForwardMode=4``. For fourteen rounds the reference page nevertheless told
+    the reader the mapping "is not documented" — so it is now stated on every
+    surface, and pinned here rather than trusted.
+    """
+    reference = OPTIMIZATION_REFERENCE.read_text(encoding="utf-8")
+    row = next(
+        line for line in reference.splitlines() if line.startswith("| `ForwardMode`")
+    )
+    schema = _tester_run_schema()
+    return [
+        ("references/optimization.md", row),
+        ("tester_report.py --forward-mode", _tester_cli_help("--forward-mode")),
+        ("build_tester_ini docstring", str(tester_report.build_tester_ini.__doc__)),
+        ("mt5_tester_run.forward_mode", str(schema["forward_mode"]["description"])),
+    ]
+
+
+def _forward_date_surfaces() -> List[Tuple[str, str]]:
+    """The surfaces that describe ``ForwardDate``, which mode 4 alone reads."""
+    schema = _tester_run_schema()
+    return [
+        (
+            "references/optimization.md",
+            OPTIMIZATION_REFERENCE.read_text(encoding="utf-8"),
+        ),
+        ("tester_report.py --forward-date", _tester_cli_help("--forward-date")),
+        ("build_tester_ini docstring", str(tester_report.build_tester_ini.__doc__)),
+        ("mt5_tester_run.forward_date", str(schema["forward_date"]["description"])),
+    ]
+
+
+@pytest.mark.parametrize("surface,text", _forward_mode_surfaces())
+def test_every_surface_states_the_forward_mode_integers(
+    surface: str, text: str
+) -> None:
+    """1/2, 1/3, 1/4 and a custom mode 4 — wherever the value is picked."""
+    for fraction in ("1/2", "1/3", "1/4"):
+        assert fraction in text, f"{surface} does not state the {fraction} split"
+    assert "custom" in text.lower(), f"{surface} never mentions the custom mode 4"
+
+
+@pytest.mark.parametrize("surface,text", _forward_date_surfaces())
+def test_every_surface_says_mode_4_alone_reads_forward_date(
+    surface: str, text: str
+) -> None:
+    """The rule ``tester_ini_warnings`` enforces, stated where the date is set.
+
+    MetaQuotes: "The parameter is valid only if ForwardMode=4." A user who sets
+    a custom split date with mode 1 gets the half split silently ignored.
+    """
+    assert "4" in text, f"{surface} never names the mode that reads the date"
+    assert "only" in text.lower(), f"{surface} does not say mode 4 is the only one"
+
+
+@pytest.mark.parametrize(
+    "path", [OPTIMIZATION_REFERENCE, REVIEW_NOTES, VERIFY_SCRIPT, TESTER_SCRIPT]
+)
+def test_no_surface_calls_the_forward_mode_mapping_undocumented(path: Path) -> None:
+    """The hedge is pinned gone, in the exact phrases it used to wear."""
+    text = path.read_text(encoding="utf-8")
+    for hedge in (
+        "mapping is not documented",
+        "mapping is undocumented",
+        "integer↔split mapping is not documented",
+    ):
+        assert hedge not in text, f"{path.name} still says: {hedge!r}"
+
+
+@pytest.mark.parametrize("path", [SKILL, OPTIMIZATION_REFERENCE, README])
+def test_the_forward_coverage_rule_reaches_the_reader(path: Path) -> None:
+    """MT5 forward-runs only the best 10% (complete) or 25% (genetic) of passes.
+
+    The two forward columns are therefore a slice the platform selected because
+    those passes already won in sample, and ``spearman_back_vs_forward`` over
+    that slice is weaker evidence than it looks. A reader who is not told this
+    quotes the decay as if it described the run.
+    """
+    text = path.read_text(encoding="utf-8")
+    assert "10%" in text and "25%" in text, f"{path.name} omits the 10%/25% rule"
+
+
+def test_every_documented_criterion_value_has_a_row() -> None:
+    """MetaQuotes lists ``OptimizationCriterion`` 0-7; 7 is the complex one."""
+    text = OPTIMIZATION_REFERENCE.read_text(encoding="utf-8")
+    start = text.index("## `OptimizationCriterion`")
+    stop = text.index("\n## ", start + 1)
+    values = {
+        int(value) for value in re.findall(r"^\| (\d+) \|", text[start:stop], re.M)
+    }
+    assert values == set(range(8)), (
+        "the criterion table lists "
+        f"{sorted(values)}; the config-file documentation goes up to 7 (the "
+        "maximum of the complex criterion)"
+    )
+
+
+def test_the_criterion_table_says_what_build_2530_changed() -> None:
+    """The `Maximizes` column is the vendor's *old* wording, and says so.
+
+    Build 2530 stopped multiplying the criterion by the balance, so on any
+    current build the `Result` column is the metric itself. Quoting the product
+    form without that note tells a reader to expect numbers a modern terminal
+    does not write.
+    """
+    text = OPTIMIZATION_REFERENCE.read_text(encoding="utf-8")
+    assert "2530" in text, "the criterion table does not mention build 2530"
+    assert "ignore the balance" in text, (
+        "the note has to say the criteria now ignore the balance, or a reader "
+        "still expects balance x metric in the Result column"
+    )

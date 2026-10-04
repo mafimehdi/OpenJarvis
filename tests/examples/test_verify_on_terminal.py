@@ -101,7 +101,18 @@ OPT
 fi
 case "${FAKE_MODE:-ok}" in
   backonly) mid="" ;;
+  documented)
+    # The shares MetaQuotes documents — 1/2, 1/3 and 1/4 of the fixture's
+    # 2022.01.01..2023.03.31 (454 days) — so the check's "matches" branch runs.
+    case "${fmode:-0}" in
+      1) mid="2022.08.15"; fwd_from="2022.08.16";;
+      2) mid="2022.10.30"; fwd_from="2022.10.31";;
+      3) mid="2022.12.06"; fwd_from="2022.12.07";;
+      *) mid="";;
+    esac;;
   *)
+    # Arbitrary shares, on purpose: the split has to be derived from the dates
+    # each half reports, not assumed from the mode.
     case "${fmode:-0}" in
       1) mid="2022.09.30"; fwd_from="2022.10.01";;
       2) mid="2022.11.30"; fwd_from="2022.12.01";;
@@ -206,6 +217,25 @@ class TestCli:
         assert "no terminal found" in result.stdout
 
 
+def _verifier_with_modes(
+    fake_terminal: Path, tmp_path: Path, modes: List[int]
+) -> vt.Verifier:
+    """The standard verifier, but running the ForwardMode values a test needs."""
+    return vt.Verifier(
+        terminal=fake_terminal,
+        expert="Examples/MACD/MACD Sample",
+        symbol="EURUSD",
+        period="H1",
+        from_date="2022.01.01",
+        to_date="2023.03.31",
+        out_dir=tmp_path / f"reports-m{'-'.join(str(m) for m in modes)}",
+        modes=modes,
+        set_file="",
+        timeout=60.0,
+        allow_runs=True,
+    )
+
+
 class TestForwardModeMapping:
     def test_it_derives_the_split_from_the_dates(self, verifier: vt.Verifier) -> None:
         result = verifier.check_1_forward_mode_mapping()
@@ -248,6 +278,67 @@ class TestForwardModeMapping:
 
         line = vt._split_line(1, Empty(), Empty())
         assert "no dates" in line
+
+    def test_a_split_matching_the_documentation_is_labelled_as_matching(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MetaQuotes documents 1/2, 1/3 and 1/4; the check compares, not collects.
+
+        The fake terminal here writes exactly the halves the documentation
+        describes for the fixture's 454-day period, which is the branch the
+        default fixture (arbitrary splits) cannot reach.
+        """
+        monkeypatch.setenv("FAKE_MODE", "documented")
+        verifier = _verifier_with_modes(fake_terminal, tmp_path, [1, 2, 3])
+        result = verifier.check_1_forward_mode_mapping()
+        joined = "\n".join(result.evidence)
+        assert "split 50%/50%" in joined
+        assert "matches the documented 1/2" in joined
+        assert "matches the documented 1/3" in joined
+        assert "matches the documented 1/4" in joined
+        assert result.status == vt.PASS
+        assert "Every observed split matches the documented" in result.note
+
+    def test_a_build_that_disagrees_is_a_finding_not_a_silent_pass(
+        self, verifier: vt.Verifier
+    ) -> None:
+        """The default fixture splits 60/40 for mode=1, which is not 1/2."""
+        result = verifier.check_1_forward_mode_mapping()
+        joined = "\n".join(result.evidence)
+        assert "split 60%/40%" in joined
+        assert "differs from the documented 1/2" in joined
+        assert "splits the period differently from MetaQuotes" in result.note
+        # The observation is still good data: what disagrees is the build, not
+        # the check, so this is a PASS with a note worth pasting back.
+        assert result.status == vt.PASS
+        assert "Paste the mode= lines back" in result.note
+
+    def test_modes_with_no_documented_share_are_not_compared(self) -> None:
+        """0 does not split and 4 takes its date from ForwardDate."""
+
+        class Half:
+            def __init__(self, start: str, end: str) -> None:
+                self.metrics = {"from_date": start, "to_date": end}
+
+        back = Half("2022.01.01", "2022.09.30")
+        forward = Half("2022.10.01", "2023.03.31")
+        for mode in (0, 4):
+            line = vt._split_line(mode, back, forward)
+            assert "split 60%/40%" in line
+            assert "documented" not in line
+
+    def test_the_share_table_agrees_with_its_own_labels(self) -> None:
+        """The numbers and the words have to describe the same split.
+
+        MetaQuotes documents 1 = 1/2, 2 = 1/3, 3 = 1/4. A share that drifted from
+        its label would leave the check comparing against one thing and printing
+        another, and both halves of that sentence look plausible on their own.
+        """
+        assert set(vt.DOCUMENTED_FORWARD_SHARE) == set(vt.DOCUMENTED_FORWARD_LABEL)
+        for mode, label in vt.DOCUMENTED_FORWARD_LABEL.items():
+            numerator, denominator = label.split("/")
+            expected = int(numerator) / int(denominator)
+            assert vt.DOCUMENTED_FORWARD_SHARE[mode] == pytest.approx(expected), mode
 
 
 class TestForwardFileNames:

@@ -2152,6 +2152,12 @@ class TestForwardAnalysis:
             "carry both a back and a forward result" in w for w in analysis["warnings"]
         )
         assert not any("out of sample the median" in w for w in analysis["warnings"])
+        # That warning already ends "the forward figures describe those passes
+        # and not the run", so the slice warning would only repeat it — the two
+        # are deliberately exclusive.
+        assert not any(
+            "passes carry a forward result" in w for w in analysis["warnings"]
+        )
 
     def test_enough_paired_passes_still_earn_the_forward_warning(self) -> None:
         result = tr.parse_optimization_text(
@@ -2166,6 +2172,87 @@ class TestForwardAnalysis:
         assert not any(
             "carry both a back and a forward result" in w for w in analysis["warnings"]
         )
+
+    def test_a_forward_slice_says_it_is_a_slice(self) -> None:
+        """MT5 forward-runs only the best 10% (complete) or 25% (genetic).
+
+        So a table where half the passes have no forward number is normal, and
+        the figures computed from the half that does are about the passes that
+        already won in sample — the analysis has to say that out loud.
+        """
+        result = tr.parse_optimization_text(
+            optimization_xml(self._thin_forward_rows(paired=6), FORWARD_HEADER)
+        )
+
+        analysis = tr.analyze_optimization(result, rank_by="back_result")
+
+        assert analysis["forward"]["passes"] == 6
+        assert analysis["forward"]["total_passes"] == 12
+        assert any(
+            "only 6 of 12 passes carry a forward result" in w
+            for w in analysis["warnings"]
+        )
+        assert any("best 10%" in w for w in analysis["warnings"])
+
+    def test_a_fully_populated_forward_column_is_not_called_a_slice(self) -> None:
+        result = tr.parse_optimization_text(
+            optimization_xml(self._forward_rows(agreeable=True), FORWARD_HEADER)
+        )
+
+        analysis = tr.analyze_optimization(result, rank_by="back_result")
+
+        assert analysis["forward"]["passes"] == 12
+        assert analysis["forward"]["total_passes"] == 12
+        assert not any(
+            "passes carry a forward result" in w for w in analysis["warnings"]
+        )
+
+    def test_a_forward_column_of_exact_zeros_is_called_suspicious(self) -> None:
+        """An empty cell parses as None and is dropped; a 0 is a *value*.
+
+        If a build fills the cells of passes it never re-ran with 0 instead of
+        leaving them empty, every pass looks like it lost its whole back result
+        out of sample. The reader cannot tell that from a dead forward half, so
+        it names the ambiguity instead of reporting a 100% degradation as fact.
+        """
+        rows: List[Tuple[str, ...]] = []
+        for index in range(6):
+            rows.append(
+                (
+                    str(index + 1),
+                    str(20000.0 - index * 1000.0),
+                    "0",
+                    "0",
+                    "5",
+                    "1.4",
+                    "2.5",
+                    "1.1",
+                    "0",
+                    "9",
+                    "200",
+                    str(10 + index),
+                )
+            )
+        result = tr.parse_optimization_text(optimization_xml(rows, FORWARD_HEADER))
+
+        analysis = tr.analyze_optimization(result, rank_by="back_result")
+
+        assert analysis["forward"]["forward_all_zero"] is True
+        assert analysis["forward"]["median_forward_result"] == 0
+        assert any(
+            "every one of the 6 forward results is exactly 0" in w
+            for w in analysis["warnings"]
+        )
+
+    def test_a_forward_column_with_real_values_is_not_flagged(self) -> None:
+        result = tr.parse_optimization_text(
+            optimization_xml(self._forward_rows(agreeable=True), FORWARD_HEADER)
+        )
+
+        analysis = tr.analyze_optimization(result, rank_by="back_result")
+
+        assert "forward_all_zero" not in analysis["forward"]
+        assert not any("exactly 0" in w for w in analysis["warnings"])
 
     def test_agreeing_ranks_do_not_warn(self) -> None:
         result = tr.parse_optimization_text(

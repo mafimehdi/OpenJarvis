@@ -2616,6 +2616,18 @@ def analyze_optimization(
                 "result — too few to say whether the in-sample ranking holds, so "
                 "the forward figures describe those passes and not the run"
             )
+        elif paired and len(paired) < len(passes):
+            # Documented platform behaviour, not a defect: MT5 optimizes on the
+            # back part and then re-runs only the best 10% (slow complete) or
+            # 25% (genetic) on the forward part. The rows that survive are the
+            # ones that already won in sample, so a rank correlation over them
+            # has almost no in-sample spread left to measure.
+            warnings.append(
+                f"only {len(paired)} of {len(passes)} passes carry a forward "
+                "result — MT5 re-runs just the best 10% (slow complete) or 25% "
+                "(genetic) on the forward half, so these forward figures describe "
+                "passes that already won in sample, not the run as a whole"
+            )
         if paired:
             backs = [float(item.metrics["back_result"]) for item in paired]
             forwards = [float(item.metrics["forward_result"]) for item in paired]
@@ -2624,12 +2636,26 @@ def analyze_optimization(
             median_forward = _median(forwards)
             forward = {
                 "passes": len(paired),
+                "total_passes": len(passes),
                 "median_back_result": median_back,
                 "median_forward_result": median_forward,
                 "spearman_back_vs_forward": (
                     round(rho, 4) if rho is not None else None
                 ),
             }
+            if not any(forwards):
+                # An empty Forward Result cell parses as None and is excluded
+                # above, so a column of exact zeros is either a forward half that
+                # genuinely produced nothing or cells the terminal filled with 0
+                # instead of leaving blank. Both readings change what the
+                # degradation computed below means, so name the ambiguity.
+                forward["forward_all_zero"] = True
+                warnings.append(
+                    f"every one of the {len(paired)} forward results is exactly "
+                    "0 — either the forward half really produced nothing, or the "
+                    "terminal wrote 0 into cells it never ran; compare the "
+                    "terminal's Forward Results tab before quoting a degradation"
+                )
             if median_back is not None and median_forward is not None:
                 if median_back > 0 and median_forward < median_back:
                     loss = (median_back - median_forward) / abs(median_back)
@@ -3617,10 +3643,14 @@ def build_tester_ini(
 
     ``ForwardMode`` turns on forward testing — the optimizer re-runs its best
     passes on the part of the period it was not allowed to see, which is the
-    only built-in check on overfitting. ``0`` disables it; the other values are
-    the splits in the terminal's Forward drop-down, and ``ForwardDate`` sets a
-    custom split date. The forward half is written to a second report whose
-    name carries a ``.forward`` suffix.
+    only built-in check on overfitting. ``0`` disables it; ``1``, ``2`` and
+    ``3`` are the 1/2, 1/3 and 1/4 splits of the period, and ``4`` is a custom
+    split whose start date comes from ``ForwardDate`` — which MT5 reads only in
+    that mode. (MetaQuotes documents both rules in the terminal help's start-up
+    options.) The forward half is written to a second report whose name carries
+    a ``.forward`` suffix. In an optimization the terminal re-runs only the best
+    10% of passes (slow complete) or 25% (genetic) on the forward half, so the
+    table's ``Forward Result`` column is populated for that slice alone.
 
     ``Report`` is relative to the platform *installation* directory and MT5
     does not create the folder it points into. An optimization writes ``.xml``
@@ -4170,11 +4200,13 @@ def _emit(payload: Any, json_out: Optional[Path], quiet: bool) -> None:
     "--forward-mode",
     type=int,
     default=None,
-    help="Forward (out-of-sample) testing: 0 off, otherwise the terminal's "
-    "Forward split.",
+    help="Forward (out-of-sample) testing: 0 off, 1 = 1/2 of the period, "
+    "2 = 1/3, 3 = 1/4, 4 = custom (needs --forward-date).",
 )
 @click.option(
-    "--forward-date", default="", help="Custom forward split date, YYYY.MM.DD."
+    "--forward-date",
+    default="",
+    help="Custom forward split date, YYYY.MM.DD. Read only with --forward-mode 4.",
 )
 @click.option("--print-ini", is_flag=True, help="Print the generated ini and exit.")
 @click.option("-v", "--verbose", is_flag=True, help="Debug logging to stderr.")

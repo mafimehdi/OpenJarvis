@@ -402,12 +402,42 @@ turned out to be committed: a CLI run had written the default report name into t
 root and `git add -A` swept it in. Both files are removed and `.gitignore` now covers
 `/TesterReport.*`.
 
+**What the terminal's own documentation settled.** Two claims in the companion's
+reference page were wrong in the direction that costs a reader time. `ForwardMode`'s
+integer↔split mapping was written up as undocumented, with a review note telling the
+reader to derive it from a run, while MetaQuotes publishes it outright — 0 off, 1 = 1/2
+of the testing period, 2 = 1/3, 3 = 1/4, 4 = a custom interval taken from `ForwardDate`
+— and `tester_ini_warnings` already depended on the `4` case when it warned that
+`ForwardDate` is read only with `ForwardMode=4`. The mapping is now stated on all four
+surfaces where the value gets picked (the reference page, `--forward-mode`'s help, the
+`build_tester_ini` docstring and the MCP `forward_mode` description), and
+`verify_on_terminal.py` holds the documented shares so its check compares an observed
+split against them instead of only collecting dates. The same page called `Model=4` the
+slowest where MetaQuotes calls `Model=0` "the most accurate but the slowest"; listed
+`OptimizationCriterion` only to 6 where the documentation goes to 7, the complex
+criterion; quoted the criteria's pre-build-2530 product form without saying that build
+2530 made them ignore the balance, so a modern `Result` column is the metric itself; and
+filed `ProfitInPips` under "report and UI details" although it removes swap and
+commission from the run and skips margin control, which makes its numbers incomparable
+with a normal run's.
+
+Two facts the analysis now states instead of leaving to be discovered. MT5 forward-runs
+only the best 10% of passes (slow complete) or 25% (genetic), so the `Forward Result`
+column is a slice the platform selected because those passes already won in sample:
+`analyze_optimization` reports `forward.total_passes` beside `forward.passes` and warns
+when the forward figures cover a fraction of the table, which is what a rank correlation
+over the top 10% is measuring. And a forward column whose every value is exactly 0 is
+called out, because an empty cell parses as missing while a written 0 parses as a
+result — were a build to fill the cells of untested passes with 0, every pass would read
+as a 100% out-of-sample loss and nothing in the table would say so.
+
 **Verifying the assumptions a fake terminal cannot.**
 `examples/mql_companion/verify_on_terminal.py` runs the experiments
 `REVIEW-NOTES.md` lists, on a machine that has MetaTrader installed, and prints
 what it observed plus a `paste this back` block for the pull request. Eleven
-checks, numbered to match the notes: the `ForwardMode` integer→split mapping is
-derived from the dates each half actually reports; the forward companion name is
+checks, numbered to match the notes: each `ForwardMode` split is measured from
+the dates the two halves actually report and compared with the 1/2, 1/3 and 1/4
+MetaQuotes documents, so a build that disagrees says so; the forward companion name is
 compared with the names `forward_companion()` looks for, on disk rather than in
 theory; `process_grace` is measured by running the same config with the grace at
 0 and at 5 seconds, which is the only way to tell a real race from a machine that

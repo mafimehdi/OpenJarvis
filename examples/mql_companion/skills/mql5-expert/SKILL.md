@@ -210,7 +210,12 @@ performance:
 - **Forward columns** (`Back Result` / `Forward Result`) — trust the forward
   ranking. `median_degradation_pct` and `spearman_back_vs_forward` say whether
   the in-sample order survived out-of-sample data; a rho near zero means
-  picking the best pass was close to picking at random.
+  picking the best pass was close to picking at random. **They cover only the
+  passes MT5 re-ran.** The terminal forward-tests the best 10% of passes (slow
+  complete) or 25% (genetic) and leaves the rest of the column empty, so read
+  `forward.passes` against `forward.total_passes` before quoting either: a rank
+  correlation over the top 10% had almost no in-sample spread left to rank, and
+  the decay it reports is the decay of passes that already won.
 
 When the run had a forward half of its own (`ForwardMode`), MT5 writes a second
 report next to the first (`<name>.forward.htm`) and `mt5_tester_forward_check`
@@ -233,8 +238,9 @@ reasons it gives:
 
 `rank_by` accepts `result`, `profit`, `payoff`, `profit_factor`,
 `recovery_factor`, `sharpe`, `drawdown`, `trades`, `custom`, `back_result` and
-`forward_result`. The junk filters are the platform's own (no trades, no profit,
-drawdown over 50%, recovery factor under 1, Sharpe under 0.5); `filter_junk`
+`forward_result`. The junk filters are the platform's own — the five build 2530
+added to the Optimization Results tab (no trades, no profit, drawdown over 50%,
+recovery factor under 1, Sharpe under 0.5); `filter_junk`
 false exists to inspect what was hidden, not to make a result look stronger.
 
 **Turning a pass into something testable.** `set_from_pass` returns the `.set`

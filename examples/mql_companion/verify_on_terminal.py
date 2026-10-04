@@ -79,7 +79,7 @@ READ_ONLY_TOOLS: Tuple[str, ...] = (
 
 CHECKS: Tuple[Tuple[str, str, bool, str], ...] = (
     ("0", "environment: terminal, MetaEditor, out-dir", False, ""),
-    ("1", "ForwardMode integer -> split mapping (notes #1)", True, ""),
+    ("1", "ForwardMode split vs the documented 1/2, 1/3, 1/4 (notes #1)", True, ""),
     ("2", "forward companion file name (notes #2)", True, ""),
     ("3", "Model=4 real-ticks run (notes #3)", True, "--with-model4"),
     ("4", "process_grace sufficiency (notes #4)", True, "--with-grace"),
@@ -184,9 +184,24 @@ _DASH_DATE = "2022-01-01"
 _DASH_DATE_PARSED = date(2022, 1, 1)
 
 
+# MetaQuotes documents these integers in the terminal help's start-up options:
+# "ForwardMode — forward testing mode (0 — off, 1 — 1/2 of the testing period,
+# 2 — 1/3 of the testing period, 3 — 1/4 of the testing period, 4 — custom
+# interval specified using the ForwardDate parameter)". So the mapping is not
+# something this script has to discover — it is something this script can
+# *check*, and a build whose halves disagree with the documentation is a finding
+# worth pasting back rather than a gap to shrug at.
+DOCUMENTED_FORWARD_SHARE: Dict[int, float] = {1: 0.5, 2: 1.0 / 3.0, 3: 0.25}
+DOCUMENTED_FORWARD_LABEL: Dict[int, str] = {1: "1/2", 2: "1/3", 3: "1/4"}
+# A split lands on a bar boundary, so the observed share sits within a day of the
+# documented fraction. Two percentage points is far tighter than the gap between
+# 1/2 and 1/3, so it cannot hide a real disagreement.
+_SPLIT_TOLERANCE = 0.02
+
+
 def _split_line(mode: int, back: Any, forward: Any) -> str:
     """Describe one ForwardMode as a back/forward date split, if the reports
-    carry dates at all."""
+    carry dates at all, and say whether it is the split MetaQuotes documents."""
     back_from, back_to = _span(back)
     fwd_from, fwd_to = _span(forward)
     if not (back_from and back_to and fwd_from and fwd_to):
@@ -194,11 +209,21 @@ def _split_line(mode: int, back: Any, forward: Any) -> str:
     total = (fwd_to - back_from).days or 1
     back_days = (back_to - back_from).days
     back_pct = round(100 * back_days / total)
-    return (
+    line = (
         f"mode={mode}: back {back_from}..{back_to} ({back_days}d) | "
         f"forward {fwd_from}..{fwd_to} ({(fwd_to - fwd_from).days}d) | "
         f"split {back_pct}%/{100 - back_pct}%"
     )
+    documented = DOCUMENTED_FORWARD_SHARE.get(mode)
+    if documented is None:
+        # 0 does not split the period, and 4 takes its date from ForwardDate, so
+        # neither has a documented share to compare against.
+        return line
+    observed = (fwd_to - fwd_from).days / total
+    label = DOCUMENTED_FORWARD_LABEL[mode]
+    if abs(observed - documented) <= _SPLIT_TOLERANCE:
+        return f"{line} | matches the documented {label}"
+    return f"{line} | differs from the documented {label}"
 
 
 class _SizeSampler(threading.Thread):
@@ -518,10 +543,20 @@ class Verifier:
             result.note = "ForwardMode=0 must not split the period."
         elif saw_forward:
             result.status = PASS
-            result.note = (
-                "Mapping observed. Paste the mode= lines back: the integer->split "
-                "table goes into references/optimization.md, which currently says "
-                "the mapping is undocumented."
+            disagreed = [
+                line
+                for line in result.evidence
+                if "differs from the documented" in line
+            ]
+            result.note = "Paste the mode= lines back. " + (
+                "This build splits the period differently from MetaQuotes' "
+                "documented 1/2, 1/3 and 1/4. Keep the observed numbers: they are "
+                "what this terminal actually does, and the docs should carry both "
+                "readings with the build that produced each."
+                if disagreed
+                else "Every observed split matches the documented 1/2, 1/3 and "
+                "1/4, so references/optimization.md and note 1 in REVIEW-NOTES.md "
+                "are confirmed on this build."
             )
         else:
             result.status = UNKNOWN
