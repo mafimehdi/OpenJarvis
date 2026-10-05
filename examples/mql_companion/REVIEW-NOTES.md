@@ -322,7 +322,7 @@ Enforced today, in the order it bites:
    `_assert_demo_account()`, and no combination of flags lifts it.
 3. A market order without a stop loss is refused, volume must be an exact
    multiple of the lot step, SL/TP are checked against the broker's stops level
-   and prices are snapped to the tick grid before anything is sent.
+   (from the closing price: Bid for a buy, Ask for a sell) and prices are snapped to the tick grid before anything is sent.
 4. The account password comes from the environment only, and `--http` refuses a
    non-loopback bind without `--token`.
 5. Every tool declares its MCP annotation hints — `readOnlyHint`,

@@ -67,7 +67,7 @@ Full list: mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes
 | 10036 | `POSITION_CLOSED` | The position you addressed is already gone: the "vanished mid-loop" case below, reported by the server |
 | 10014 | `INVALID_VOLUME` | Lot not on `SYMBOL_VOLUME_STEP` or outside MIN/MAX |
 | 10015 | `INVALID_PRICE` | Price not normalized to `SYMBOL_DIGITS`, or stale |
-| 10016 | `INVALID_STOPS` | SL/TP too close to market (< `SYMBOL_TRADE_STOPS_LEVEL`) or on the wrong side |
+| 10016 | `INVALID_STOPS` | SL/TP too close to market (< `SYMBOL_TRADE_STOPS_LEVEL`, measured from **Bid for a buy, Ask for a sell** — an SL typed from the entry price is a spread short on both sides) or on the wrong side |
 | 10017 | `TRADE_DISABLED` | AutoTrading off, or symbol not tradable — stop retrying |
 | 10018 | `MARKET_CLOSED` | Session closed — retry on the next session, not the next tick |
 | 10019 | `NO_MONEY` | Margin insufficient — reduce volume or check `OrderCalcMargin` |

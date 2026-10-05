@@ -254,3 +254,136 @@ class TestTemplateIsCleanMql5:
             "BarsCalculated",
         ):
             assert required in template, f"template lost {required!r}"
+
+
+def _function_body(code: str, name: str) -> str:
+    """Return the ``{...}`` body of MQL5 function ``name`` (comments stripped)."""
+    import re
+
+    match = re.search(rf"^[A-Za-z_][\w ]*\b{name}\s*\(", code, re.MULTILINE)
+    assert match, f"template has no function {name}()"
+    start = code.index("{", match.end())
+    depth = 0
+    for pos in range(start, len(code)):
+        depth += {"{": 1, "}": -1}.get(code[pos], 0)
+        if depth == 0:
+            return code[start : pos + 1]
+    raise AssertionError(f"unbalanced braces in {name}()")
+
+
+@pytest.fixture(scope="module")
+def template_code() -> str:
+    from openjarvis.evals.scorers.mql_bench import strip_comments_and_strings
+
+    raw = (SKILL_DIR / "templates" / "ea-template.mq5").read_text(encoding="utf-8")
+    return strip_comments_and_strings(raw)
+
+
+def _squash(text: str) -> str:
+    return "".join(text.split())
+
+
+class TestTemplateTradeFlow:
+    """The order path the template teaches, pinned against the MQL5 reference.
+
+    Each test names one claim from a vendor page; the numeric ones also show
+    the arithmetic the claim rests on, so the rationale cannot drift from the
+    code unnoticed.
+    """
+
+    def test_stops_are_measured_from_the_closing_price(
+        self, template_code: str
+    ) -> None:
+        # mql5.com/en/articles/2555: buy -> Bid, sell -> Ask, for SL *and* TP.
+        body = _squash(_function_body(template_code, "StopsAreValid"))
+        buy, sell = body.split("else", 1)
+        for needle in ("bid-sl<", "tp-bid<"):
+            assert needle in buy, f"buy branch lost {needle!r}"
+        for needle in ("sl-ask<", "ask-tp<"):
+            assert needle in sell, f"sell branch lost {needle!r}"
+
+    @pytest.mark.parametrize("buy", [True, False])
+    def test_an_sl_typed_from_the_entry_is_a_spread_short(self, buy: bool) -> None:
+        # Both sides: a buy enters at the Ask but closes at the Bid, a sell
+        # enters at the Bid but closes at the Ask. The template builds SL from
+        # the entry price, so the naive `n >= level` test is off by the spread.
+        point, level, spread, n = 0.00001, 300, 20, 300
+        bid = 1.10000
+        ask = bid + spread * point
+        if buy:
+            sl = ask - n * point
+            real = round((bid - sl) / point)
+        else:
+            sl = bid + n * point
+            real = round((sl - ask) / point)
+        assert n >= level  # what a distance-only check sees
+        assert real == level - spread < level  # what the server measures
+
+    def test_open_position_validates_the_real_prices_not_the_typed_distance(
+        self, template_code: str
+    ) -> None:
+        body = _squash(_function_body(template_code, "OpenPosition"))
+        assert "StopsAreValid(type,sl,tp)" in body
+        assert "sl_points*point<min_distance" not in body
+        assert body.index("StopsAreValid(") < body.index("PositionOpen(")
+
+    def test_the_server_verdict_comes_from_the_retcode(
+        self, template_code: str
+    ) -> None:
+        # CTrade::PositionOpen's bool is "basic structures checked", not "done".
+        body = _squash(_function_body(template_code, "OpenPosition"))
+        assert "RetcodeIsSuccess(retcode)" in body
+        assert "if(!sent)" not in body
+        import re
+
+        helper = _function_body(template_code, "RetcodeIsSuccess")
+        accepted = set(re.findall(r"TRADE_RETCODE_\w+", helper))
+        assert accepted == {
+            "TRADE_RETCODE_PLACED",  # 10008
+            "TRADE_RETCODE_DONE",  # 10009
+            "TRADE_RETCODE_DONE_PARTIAL",  # 10010
+        }
+
+    def test_a_transient_refusal_does_not_consume_the_bar(
+        self, template_code: str
+    ) -> None:
+        body = _function_body(template_code, "OnTick")
+        flat = _squash(body)
+        assert "IsNewBar" not in _squash(template_code)
+        order = [
+            "HasUnhandledBar()",
+            "TradingIsAllowed()",
+            "SpreadIsAcceptable()",
+            "BarsCalculated(g_fast_handle)",
+            "CopyBuffer(g_slow_handle",
+            "MarkBarHandled();",
+        ]
+        positions = [flat.index(item) for item in order[:-1]]
+        positions.append(flat.rindex(order[-1]))  # the final mark, not the early one
+        assert positions == sorted(positions), dict(zip(order, positions))
+        # the only other mark is the own-position branch, which is final
+        assert flat.count("MarkBarHandled();") == 2
+        assert "HasOwnPosition()){MarkBarHandled();return;}" in flat
+
+    def test_volume_floor_carries_an_epsilon(self, template_code: str) -> None:
+        import math
+
+        assert math.floor(0.3 / 0.1) == 2  # the double-precision trap
+        assert math.floor(0.3 / 0.1 + 1e-8) == 3
+        body = _squash(_function_body(template_code, "NormalizeVolume"))
+        assert "MathFloor(volume/lot_step+1e-8)" in body
+
+    def test_references_teach_what_the_template_does(self) -> None:
+        refs = SKILL_DIR / "references"
+        cheat = " ".join((refs / "mql5-api-cheatsheet.md").read_text("utf-8").split())
+        errors = " ".join((refs / "compile-errors.md").read_text("utf-8").split())
+        for needle in (
+            "Bid - SL >= level",
+            "SL - Ask >= level",
+            "TP - Bid >= level",
+            "Ask - TP >= level",
+            "successful check of the basic structures",
+            "MathFloor(volume / lot_step + 1e-8)",
+        ):
+            assert needle in cheat, f"cheatsheet lost {needle!r}"
+        assert "Bid for a buy, Ask for a sell" in errors

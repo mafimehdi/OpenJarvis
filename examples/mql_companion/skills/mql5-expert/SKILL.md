@@ -74,11 +74,16 @@ Check, in this order, and report findings with line references:
    Off-by-one here silently trades one bar late.
 5. **Money math** — lot size normalized to `SYMBOL_VOLUME_STEP` and clamped to
    `SYMBOL_VOLUME_MIN`/`MAX`; price normalized to `SYMBOL_DIGITS`; stop
-   distance checked against `SYMBOL_TRADE_STOPS_LEVEL`; margin verified with
-   `OrderCalcMargin` before sending.
+   distance checked against `SYMBOL_TRADE_STOPS_LEVEL` from the *closing*
+   price (Bid for a buy, Ask for a sell) for both SL and TP; the floor to the
+   lot step carries an epsilon (`0.3 / 0.1` is `2.9999999999999996`); margin
+   verified with `OrderCalcMargin` before sending.
 6. **Robustness** — `TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)` and
    `MQLInfoInteger(MQL_TRADE_ALLOWED)` before trading, requote handling,
-   `OnTradeTransaction` for fill confirmation rather than assuming success, no
+   `OnTradeTransaction` for fill confirmation rather than assuming success,
+   `ResultRetcode()` checked after every CTrade call (the `bool` it returns only
+   says the request was well-formed), a new-bar flag that is not consumed by a
+   transient filter failure (spread, trading disabled), no
    unbounded loops over `PositionsTotal()` while modifying positions (iterate
    backwards).
 7. **Backtest honesty** — flag anything that cannot be tested: martingale/grid

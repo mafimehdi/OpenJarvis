@@ -288,7 +288,8 @@ now answers from the terminal instead of from a guess.
 4. Volume must be an exact multiple of the lot step and inside the symbol's
    min/max — a hallucinated `0.113` becomes an error naming the nearest valid
    sizes, not a silently resized position.
-5. SL/TP are checked for side and for the broker's stops level *before*
+5. SL/TP are checked for side and for the broker's stops level — measured from
+   the price the position closes at (Bid for a buy, Ask for a sell) — *before*
    anything is sent, and prices are snapped to the tick grid. A price far from
    the live quote is rejected as invented.
 6. The account password is read only from the environment (`--password-env`,

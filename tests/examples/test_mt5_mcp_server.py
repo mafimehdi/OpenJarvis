@@ -639,6 +639,86 @@ class TestSafetyGates:
         assert out["isError"] is True
         assert "10 points" in out["text"]
 
+    # EURUSD in the stub: stops level 10 points, spread 12 points, so the
+    # entry price (ask for a buy, bid for a sell) is *further* from the closing
+    # price (bid / ask) than the whole stops level. mql5.com/en/articles/2555:
+    # buy needs Bid - SL >= level and TP - Bid >= level; sell needs SL - Ask >=
+    # level and Ask - TP >= level.
+
+    def _send(self, bridge: ModuleType, stub: Any, side: str, **kwargs: Any) -> Any:
+        server = bridge.build_server(stub, allow_trading=True)
+        return _call(
+            server,
+            "mt5_order_send",
+            symbol="EURUSD",
+            side=side,
+            volume=0.1,
+            **kwargs,
+        )
+
+    @pytest.mark.parametrize(
+        ("side", "stop_points", "accepted"),
+        [
+            # a buy closes at the bid: ask - n points is only n - 12 from it
+            ("buy", 15, False),  # 3 points from the bid; the entry-based check said 15
+            ("buy", 21, False),  # 9 points: one short of the level
+            ("buy", 22, True),  # exactly the level from the bid
+            # a sell closes at the ask: bid + n points is n - 12 from it
+            ("sell", 15, False),
+            ("sell", 21, False),
+            ("sell", 22, True),
+        ],
+    )
+    def test_stop_distance_is_measured_from_the_closing_price(
+        self,
+        bridge: ModuleType,
+        stub: Any,
+        side: str,
+        stop_points: int,
+        accepted: bool,
+    ) -> None:
+        tick = stub.tick("EURUSD")
+        point = 0.00001
+        if side == "buy":
+            sl = round(tick["ask"] - stop_points * point, 5)
+        else:
+            sl = round(tick["bid"] + stop_points * point, 5)
+        out = self._send(bridge, stub, side, sl=sl)
+        if accepted:
+            assert out["isError"] is False, out["text"]
+        else:
+            assert out["isError"] is True
+            closing = "bid" if side == "buy" else "ask"
+            assert f"from the {closing}" in out["text"]
+            assert "10 points" in out["text"]
+
+    def test_take_profit_is_measured_from_the_closing_price_too(
+        self, bridge: ModuleType, stub: Any
+    ) -> None:
+        # A buy TP one point above the ask is 13 points above the bid, which
+        # clears the 10-point level - the entry-based check refused it.
+        tick = stub.tick("EURUSD")
+        point = 0.00001
+        far_sl = round(tick["ask"] - 0.0050, 5)
+        buy = self._send(
+            bridge, stub, "buy", sl=far_sl, tp=round(tick["ask"] + point, 5)
+        )
+        assert buy["isError"] is False, buy["text"]
+        sell = self._send(
+            bridge,
+            stub,
+            "sell",
+            sl=round(tick["bid"] + 0.0050, 5),
+            tp=round(tick["bid"] - point, 5),
+        )
+        assert sell["isError"] is False, sell["text"]
+
+    def test_no_quote_falls_back_to_the_entry_price(self, bridge: ModuleType) -> None:
+        info = {"digits": 5, "point": 0.00001, "stops_level_points": 10}
+        with pytest.raises(bridge.Mt5Error, match="from the bid"):
+            bridge._check_stops("buy", 1.1, 1.09999, None, info, "EURUSD", {})
+        bridge._check_stops("buy", 1.1, 1.0990, None, info, "EURUSD", {})
+
     def test_take_profit_side_is_checked(self, bridge: ModuleType, stub: Any) -> None:
         server = bridge.build_server(stub, allow_trading=True)
         ask = stub.tick("EURUSD")["ask"]

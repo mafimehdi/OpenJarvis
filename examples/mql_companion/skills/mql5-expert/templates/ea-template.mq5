@@ -65,7 +65,9 @@ double NormalizeVolume(double volume)
    double       lot_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(lot_step <= 0.0)
       lot_step = 0.01;
-   double lots = MathFloor(volume / lot_step) * lot_step;
+   //--- the epsilon matters: 0.3 / 0.1 is 2.9999999999999996 in a double, and a
+   //--- bare MathFloor would silently size one step down (0.2 instead of 0.3)
+   double lots = MathFloor(volume / lot_step + 1e-8) * lot_step;
    lots = NormalizeDouble(lots, g_volume_digits);
    if(lots < min_lot)
       lots = min_lot;
@@ -94,13 +96,19 @@ double RiskVolume(const double sl_points)
    return(NormalizeVolume(risk_money / loss_per_lot));
   }
 
-bool IsNewBar()
+//--- A bar gets ONE decision, but a bar only counts as decided once the
+//--- transient filters have let the signal be evaluated. Marking it on sight
+//--- (the usual IsNewBar() that flips the flag) would let a wide spread on the
+//--- first tick - the norm around rollover - discard the bar's signal for good.
+bool HasUnhandledBar()
   {
    const datetime bar_time = iTime(_Symbol, InpTimeframe, 0);
-   if(bar_time == 0 || bar_time == g_last_bar)
-      return(false);
-   g_last_bar = bar_time;
-   return(true);
+   return(bar_time != 0 && bar_time != g_last_bar);
+  }
+
+void MarkBarHandled()
+  {
+   g_last_bar = iTime(_Symbol, InpTimeframe, 0);
   }
 
 bool SpreadIsAcceptable()
@@ -138,6 +146,45 @@ bool HasOwnPosition()
    return(false);
   }
 
+//--- SL/TP distances are measured from the price the position is CLOSED at:
+//--- Bid for a buy, Ask for a sell (mql5.com/en/articles/2555) - the opposite
+//--- side of the quote from the entry. An SL typed `n` points from the entry is
+//--- therefore only `n - spread` from that price, for a buy and a sell alike.
+//--- 0 = not set.
+bool StopsAreValid(const ENUM_ORDER_TYPE type, const double sl, const double tp)
+  {
+   const double bid      = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask      = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   const double min_dist = MinStopDistance();
+   const double slack    = SymbolInfoDouble(_Symbol, SYMBOL_POINT) / 2.0;
+
+   if(type == ORDER_TYPE_BUY)
+     {
+      if(sl > 0.0 && bid - sl < min_dist - slack)
+         return(false);
+      if(tp > 0.0 && tp - bid < min_dist - slack)
+         return(false);
+     }
+   else
+     {
+      if(sl > 0.0 && sl - ask < min_dist - slack)
+         return(false);
+      if(tp > 0.0 && ask - tp < min_dist - slack)
+         return(false);
+     }
+   return(true);
+  }
+
+//--- CTrade returns true when the request STRUCTURE checked out, not when the
+//--- server accepted it (mql5.com/en/docs/standardlibrary/tradeclasses/ctrade/
+//--- ctradepositionopen) - the server's answer is ResultRetcode().
+bool RetcodeIsSuccess(const uint retcode)
+  {
+   return(retcode == (uint)TRADE_RETCODE_PLACED ||
+          retcode == (uint)TRADE_RETCODE_DONE ||
+          retcode == (uint)TRADE_RETCODE_DONE_PARTIAL);
+  }
+
 bool MarginIsSufficient(const ENUM_ORDER_TYPE type, const double lots, const double price)
   {
    double margin = 0.0;
@@ -156,17 +203,6 @@ void OpenPosition(const ENUM_ORDER_TYPE type)
                   ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                   : SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   if(InpStopLossPoints > 0)
-     {
-      const double min_distance = MinStopDistance();
-      if(sl_points * point < min_distance)
-        {
-         PrintFormat("SL %d points below stops level (%d) - skipping entry",
-                     InpStopLossPoints, (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL));
-         return;
-        }
-     }
-
    const double lots = RiskVolume(sl_points);
    double sl = 0.0;
    double tp = 0.0;
@@ -181,6 +217,14 @@ void OpenPosition(const ENUM_ORDER_TYPE type)
       tp = (InpTakeProfitPoints > 0) ? price - (double)InpTakeProfitPoints * point : 0.0;
      }
 
+   if(!StopsAreValid(type, sl, tp))
+     {
+      PrintFormat("SL/TP too close for stops level %d points (spread %d) - skipping entry",
+                  (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL),
+                  (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD));
+      return;
+     }
+
    if(!MarginIsSufficient(type, lots, price))
      {
       PrintFormat("Insufficient margin for %.2f lots - skipping entry", lots);
@@ -192,10 +236,10 @@ void OpenPosition(const ENUM_ORDER_TYPE type)
                                           NormalizeDouble(sl, digits),
                                           NormalizeDouble(tp, digits),
                                           "openjarvis-template");
-   if(!sent)
-      PrintFormat("PositionOpen failed: retcode=%d %s",
-                  g_trade.ResultRetcode(),
-                  g_trade.ResultRetcodeDescription());
+   const uint retcode = g_trade.ResultRetcode();
+   if(!sent || !RetcodeIsSuccess(retcode))
+      PrintFormat("PositionOpen not accepted: retcode=%u %s",
+                  retcode, g_trade.ResultRetcodeDescription());
   }
 
 //+------------------------------------------------------------------+
@@ -253,11 +297,15 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   //--- filters first: cheap checks before any indicator work
-   if(!IsNewBar())            return;
+   //--- filters first: cheap checks before any indicator work. A refusal that
+   //--- can clear within the bar (trading off, spread, data not ready) returns
+   //--- WITHOUT marking the bar, so the next tick retries; an own position is
+   //--- final for this bar, so it marks it - closing mid-bar must not re-enter
+   //--- on the same cross.
+   if(!HasUnhandledBar())     return;
+   if(HasOwnPosition())       { MarkBarHandled(); return; }
    if(!TradingIsAllowed())    return;
    if(!SpreadIsAcceptable())  return;
-   if(HasOwnPosition())       return;
    if(BarsCalculated(g_fast_handle) < InpSlowPeriod + 2) return;
    if(BarsCalculated(g_slow_handle) < InpSlowPeriod + 2) return;
 
@@ -266,6 +314,7 @@ void OnTick()
    double slow[];
    if(CopyBuffer(g_fast_handle, 0, 1, 2, fast) != 2) return;
    if(CopyBuffer(g_slow_handle, 0, 1, 2, slow) != 2) return;
+   MarkBarHandled();               // every input is in hand: decide once, now
    ArraySetAsSeries(fast, true);   // [0] = shift 1 (last closed bar)
    ArraySetAsSeries(slow, true);   // [1] = shift 2 (bar before it)
 

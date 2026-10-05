@@ -1610,11 +1610,28 @@ def _check_stops(
     tp: Optional[float],
     info: Dict[str, Any],
     symbol: str,
+    quote: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Reject the mistakes an EA would otherwise learn from a broker error."""
+    """Reject the mistakes an EA would otherwise learn from a broker error.
+
+    The side rules are against the *entry* price (a buy stop sits below it).
+    The stops-level distance is not: ``SYMBOL_TRADE_STOPS_LEVEL`` is measured
+    from the price the position is **closed** at - Bid for a buy, Ask for a
+    sell (mql5.com/en/articles/2555; ``Bid - SL >= level`` and ``TP - Bid >=
+    level`` for a buy, ``SL - Ask`` and ``Ask - TP`` for a sell). That is the
+    opposite side of the quote from the entry, so a stop typed ``n`` points
+    from the entry is only ``n - spread`` from the price that counts, and TP is
+    ``spread`` further than it looks. Measuring from the entry (as this check
+    once did) waves through the former and refuses valid cases of the latter.
+    """
     digits = int(_f(info.get("digits"), 5))
     point = _f(info.get("point")) or (10**-digits)
     min_distance = int(_f(info.get("stops_level_points"))) * point
+    quote = quote or {}
+    closing = _f(quote.get("bid") if side == "buy" else quote.get("ask"))
+    if closing <= 0:  # no quote to measure from: the entry is the best we have
+        closing = entry
+    closing_name = "bid" if side == "buy" else "ask"
     if sl is not None:
         if side == "buy" and sl >= entry:
             raise Mt5Error(
@@ -1626,9 +1643,11 @@ def _check_stops(
                 f"{symbol}: a sell stop loss must be above the entry price "
                 f"({sl} <= {entry})"
             )
-        if abs(entry - sl) < min_distance - 1e-12:
+        sl_distance = (closing - sl) if side == "buy" else (sl - closing)
+        if sl_distance < min_distance - 1e-12:
             raise Mt5Error(
-                f"{symbol}: stop loss is {abs(entry - sl):.{digits}f} from entry "
+                f"{symbol}: stop loss is {sl_distance:.{digits}f} from the "
+                f"{closing_name} ({closing}), the price a {side} is closed at, "
                 f"but the broker requires at least {min_distance:.{digits}f} "
                 f"({int(_f(info.get('stops_level_points')))} points)"
             )
@@ -1643,11 +1662,13 @@ def _check_stops(
                 f"{symbol}: a sell take profit must be below the entry price "
                 f"({tp} >= {entry})"
             )
-        if abs(tp - entry) < min_distance - 1e-12:
+        tp_distance = (tp - closing) if side == "buy" else (closing - tp)
+        if tp_distance < min_distance - 1e-12:
             raise Mt5Error(
-                f"{symbol}: take profit is {abs(tp - entry):.{digits}f} from "
-                f"entry but the broker requires at least "
-                f"{min_distance:.{digits}f}"
+                f"{symbol}: take profit is {tp_distance:.{digits}f} from the "
+                f"{closing_name} ({closing}), the price a {side} is closed at, "
+                f"but the broker requires at least {min_distance:.{digits}f} "
+                f"({int(_f(info.get('stops_level_points')))} points)"
             )
 
 
@@ -1770,7 +1791,7 @@ def build_tools(
                 "Pass sl (and tp if the strategy has one). The check can be "
                 "lifted with --no-require-stops, which you should not do."
             )
-        _check_stops(which, entry, stop, take, info, str(symbol))
+        _check_stops(which, entry, stop, take, info, str(symbol), quote)
         request: Dict[str, Any] = {
             "symbol": str(symbol),
             "side": which,

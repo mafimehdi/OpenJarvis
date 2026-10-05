@@ -136,10 +136,57 @@ trade.PositionModify(ticket, sl, tp);
 trade.BuyLimit(lots, price, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "comment");
 trade.OrderDelete(order_ticket);
 
-if(!trade.PositionModify(ticket, sl, tp))
-   PrintFormat("modify failed: %d %s",
+if(!trade.PositionModify(ticket, sl, tp) ||
+   !RetcodeIsSuccess(trade.ResultRetcode()))             // see below: both halves
+   PrintFormat("modify not accepted: %u %s",
                trade.ResultRetcode(), trade.ResultRetcodeDescription());
 ```
+
+**The `bool` a CTrade call returns is not the server's verdict.** The reference
+defines it as "successful check of the basic structures" and adds that
+"successful completion … does not always mean successful execution of the trade
+operation" — read `ResultRetcode()`
+(mql5.com/en/docs/standardlibrary/tradeclasses/ctrade/ctradepositionopen).
+`if(!trade.Buy(...)) Print(...)` therefore stays silent on a server rejection
+such as `10016` or `10019`. Success is the three codes in `compile-errors.md`:
+
+```mql5
+bool RetcodeIsSuccess(const uint retcode)
+  {
+   return(retcode == (uint)TRADE_RETCODE_PLACED ||        // 10008 pending accepted
+          retcode == (uint)TRADE_RETCODE_DONE ||          // 10009
+          retcode == (uint)TRADE_RETCODE_DONE_PARTIAL);   // 10010
+  }
+```
+
+### Stops level: measured from the *closing* price
+
+`SYMBOL_TRADE_STOPS_LEVEL` is the minimum distance from the price the position
+is closed at — **Bid for a buy, Ask for a sell**
+(mql5.com/en/articles/2555; the freeze level uses the same references):
+
+| | SL must satisfy | TP must satisfy |
+|---|---|---|
+| Buy | `Bid - SL >= level` | `TP - Bid >= level` |
+| Sell | `SL - Ask >= level` | `Ask - TP >= level` |
+
+The closing price is the *opposite* side of the quote from the entry (a buy
+enters at the Ask and closes at the Bid), so an SL typed `n` points from the entry
+is only `n - spread` from the price that counts — buy and sell alike. With level
+300 and spread 20, `n = 300` passes a naive `n >= level` test on either side and
+the server answers `10016`. (TP goes the other way: `spread` *further* than typed.) Check the real SL *and* TP prices against Bid/Ask
+(`StopsAreValid()` in `templates/ea-template.mq5`); checking only the SL, or only
+the distance you typed, is the bug.
+
+### Rounding a lot down to the step
+
+```mql5
+double lots = MathFloor(volume / lot_step + 1e-8) * lot_step;   // epsilon is not optional
+```
+
+`0.3 / 0.1` is `2.9999999999999996` in a double, so a bare `MathFloor` turns an
+exact `0.3` into `0.2` — and with a 0.01 step, 61 of the first 500 exact lot
+sizes lose a step the same way.
 
 `SetTypeFillingBySymbol` reads `SYMBOL_FILLING_MODE` for you, and the reference
 documents the tie-break: when a symbol allows both `SYMBOL_FILLING_FOK` and
