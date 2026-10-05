@@ -96,7 +96,7 @@ def _script_compiler(
     def run(cmd: Sequence[Any], **kwargs: Any) -> subprocess.CompletedProcess:
         calls.append([str(part) for part in cmd])
         target = next(
-            (str(p)[len("/compile:"):] for p in cmd if str(p).startswith("/compile:")),
+            (str(p)[len("/compile:") :] for p in cmd if str(p).startswith("/compile:")),
             None,
         )
         text = script.pop(0) if len(script) > 1 else script[0]
@@ -472,9 +472,7 @@ class TestWhatTheModelIsTold:
         _script_compiler(monkeypatch, [FAILING_LOG, CLEAN_LOG], writes_artifact=True)
         fake = _install_jarvis(monkeypatch, [_fenced(A_FIX)])
 
-        result = _invoke(
-            source, editor, "--max-rounds", "2", "--context", str(header)
-        )
+        result = _invoke(source, editor, "--max-rounds", "2", "--context", str(header))
 
         assert result.exit_code == 0, result.output
         # The rules are prose wrapped at ~76 columns, so a phrase can straddle a
@@ -549,9 +547,7 @@ class TestTheReport:
         _install_jarvis(monkeypatch, [_fenced(A_FIX)])
         report = tmp_path / "nested" / "report.json"
 
-        result = _invoke(
-            source, editor, "--max-rounds", "3", "--json-out", str(report)
-        )
+        result = _invoke(source, editor, "--max-rounds", "3", "--json-out", str(report))
 
         assert result.exit_code == 0, result.output
         assert report.exists(), "the report's directory is created for it"

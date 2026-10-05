@@ -765,6 +765,25 @@ class TestDocumentedCommandsRun:
         )
         assert code == 0, out
         assert "10" in out, "the ten claims REVIEW-NOTES.md lists should all appear"
+        # note 1's remaining question got a run of its own: id 11, plus the flag
+        # that opts into the two-stage optimization it needs
+        assert "11" in out and "--with-forward-opt" in out
+
+    def test_review_notes_note_1_names_the_run_that_settles_it(self) -> None:
+        """Note 1 promises an experiment; check 11 has to be what it points at.
+
+        The note is the only place a reader learns what each outcome would mean,
+        so it has to keep naming the command, the documented share it compares
+        against, and the tie-breaker for a zero cell.
+        """
+        notes = _flat((COMPANION / "REVIEW-NOTES.md").read_text(encoding="utf-8"))
+        note1 = notes[notes.index("## 1.") : notes.index("## 2.")]
+        assert "--only 11" in note1 and "--with-forward-opt" in note1
+        assert "10%" in note1, "the share the counts are compared against"
+        for verdict in ("PASS", "FAIL", "UNKNOWN"):
+            assert verdict in note1, f"note 1 has to say what {verdict} decides"
+        assert "Forward Results tab" in note1, "the tie-breaker for a 0 cell"
+        assert "treat 0 as missing" in note1
 
     def test_skill_dry_run_writes_nothing(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -1138,7 +1157,7 @@ class TestSkillKnowledgeMatchesTheMql5Reference:
         start = cheatsheet.index("## Margin / profit math")
         # the next heading of the same level, whichever section that turns out to
         # be — naming one hardcodes an order the page does not promise
-        section = _flat(cheatsheet[start:cheatsheet.index("\n## ", start + 1)])
+        section = _flat(cheatsheet[start : cheatsheet.index("\n## ", start + 1)])
 
         assert "price_close" in section, "the fifth parameter is never named"
         assert "not a stop loss" in section.lower(), (
@@ -1221,14 +1240,14 @@ class TestSkillKnowledgeMatchesTheMql5Reference:
         """
         cheatsheet = self._cheatsheet()
         start = cheatsheet.index("## Event-driven confirmation")
-        section = _flat(cheatsheet[start:cheatsheet.index("\n## ", start + 1)])
+        section = _flat(cheatsheet[start : cheatsheet.index("\n## ", start + 1)])
         vendor_wording = "does not lead to the occurrence of TRADE_TRANSACTION_POSITION"
         assert vendor_wording in section
         assert "enum_trade_transaction_type" in section
 
     def test_the_ea_skeleton_marks_the_event_an_ea_never_receives(self) -> None:
         cheatsheet = self._cheatsheet()
-        skeleton = cheatsheet[cheatsheet.index("## Program skeleton"):]
+        skeleton = cheatsheet[cheatsheet.index("## Program skeleton") :]
         skeleton = skeleton[: skeleton.index("## Indicators")]
         assert "OnCalculate" in skeleton, "the signature is worth keeping"
         assert "never receives" in _flat(skeleton), (
@@ -1425,6 +1444,7 @@ def test_the_criterion_table_says_what_build_2530_changed() -> None:
         "still expects balance x metric in the Result column"
     )
 
+
 COMPILE_ERRORS = SKILL_DIR / "references" / "compile-errors.md"
 
 
@@ -1480,7 +1500,7 @@ def _compile_produces_section() -> str:
     """
     text = COMPILE_ERRORS.read_text(encoding="utf-8")
     start = text.index("### What a compile produces")
-    section = text[start:text.index("## Trade retcodes", start)]
+    section = text[start : text.index("## Trade retcodes", start)]
     return " ".join(section.replace("**", "").split())
 
 
@@ -1561,9 +1581,7 @@ def test_the_published_exit_code_contract_covers_a_build_with_no_binary() -> Non
 def test_the_flag_the_documents_promise_is_on_the_command() -> None:
     """The docs may only relax a gate the command actually exposes."""
     opts = {
-        opt
-        for param in compile_loop.main.params
-        for opt in getattr(param, "opts", ())
+        opt for param in compile_loop.main.params for opt in getattr(param, "opts", ())
     }
     assert "--allow-missing-artifact" in opts
     assert "--syntax-only" in opts and "--json-out" in opts

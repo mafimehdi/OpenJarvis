@@ -75,6 +75,125 @@ case "${FAKE_MODE:-ok}" in
   noreport) exit 0;;
 esac
 if [ "${opt:-0}" -gt 0 ]; then
+  case "${FAKE_MODE:-ok}" in
+  fwdopt-empty)
+    # One of the shapes MT5 could write for a pass the forward stage never ran.
+    # The short row drops its trailing cells: dropping a middle one instead
+    # would slide the input value into the Forward Result column.
+    cat > "${report}.xml" <<FWDMPTY
+<?xml version="1.0" encoding="ANSI"?>
+<Table>
+  <Row>
+    <Cell>Pass</Cell><Cell>Result</Cell><Cell>Profit</Cell>
+    <Cell>Expected Payoff</Cell><Cell>Profit Factor</Cell>
+    <Cell>Recovery Factor</Cell><Cell>Sharpe Ratio</Cell><Cell>Custom</Cell>
+    <Cell>Equity DD %</Cell><Cell>Trades</Cell><Cell>Back Result</Cell>
+    <Cell>Forward Result</Cell><Cell>InpFastEMA</Cell>
+  </Row>
+  <Row>
+    <Cell>4</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>9100</Cell><Cell>640</Cell><Cell>12</Cell>
+  </Row>
+  <Row>
+    <Cell>9</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>8800</Cell><Cell></Cell><Cell>12</Cell>
+  </Row>
+  <Row>
+    <Cell>2</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>7000</Cell>
+  </Row>
+</Table>
+FWDMPTY
+    exit 0;;
+  fwdopt-zeros)
+    # One of the shapes MT5 could write for a pass the forward stage never ran.
+    cat > "${report}.xml" <<FWDEROS
+<?xml version="1.0" encoding="ANSI"?>
+<Table>
+  <Row>
+    <Cell>Pass</Cell><Cell>Result</Cell><Cell>Profit</Cell>
+    <Cell>Expected Payoff</Cell><Cell>Profit Factor</Cell>
+    <Cell>Recovery Factor</Cell><Cell>Sharpe Ratio</Cell><Cell>Custom</Cell>
+    <Cell>Equity DD %</Cell><Cell>Trades</Cell><Cell>Back Result</Cell>
+    <Cell>Forward Result</Cell><Cell>InpFastEMA</Cell>
+  </Row>
+  <Row>
+    <Cell>4</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>9100</Cell><Cell>640</Cell><Cell>12</Cell>
+  </Row>
+  <Row>
+    <Cell>9</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>8800</Cell><Cell>0</Cell><Cell>12</Cell>
+  </Row>
+  <Row>
+    <Cell>2</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>7000</Cell><Cell>0</Cell><Cell>12</Cell>
+  </Row>
+</Table>
+FWDEROS
+    exit 0;;
+  fwdopt-all)
+    # One of the shapes MT5 could write for a pass the forward stage never ran.
+    cat > "${report}.xml" <<FWD-ALL
+<?xml version="1.0" encoding="ANSI"?>
+<Table>
+  <Row>
+    <Cell>Pass</Cell><Cell>Result</Cell><Cell>Profit</Cell>
+    <Cell>Expected Payoff</Cell><Cell>Profit Factor</Cell>
+    <Cell>Recovery Factor</Cell><Cell>Sharpe Ratio</Cell><Cell>Custom</Cell>
+    <Cell>Equity DD %</Cell><Cell>Trades</Cell><Cell>Back Result</Cell>
+    <Cell>Forward Result</Cell><Cell>InpFastEMA</Cell>
+  </Row>
+  <Row>
+    <Cell>4</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>9100</Cell><Cell>640</Cell><Cell>12</Cell>
+  </Row>
+  <Row>
+    <Cell>9</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>8800</Cell><Cell>210</Cell><Cell>12</Cell>
+  </Row>
+  <Row>
+    <Cell>2</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>7000</Cell><Cell>95</Cell><Cell>12</Cell>
+  </Row>
+</Table>
+FWD-ALL
+    exit 0;;
+  fwdopt-noforward)
+    # One of the shapes MT5 could write for a pass the forward stage never ran.
+    cat > "${report}.xml" <<FWDWARD
+<?xml version="1.0" encoding="ANSI"?>
+<Table>
+  <Row>
+    <Cell>Pass</Cell><Cell>Result</Cell><Cell>Profit</Cell>
+    <Cell>Expected Payoff</Cell><Cell>Profit Factor</Cell>
+    <Cell>Recovery Factor</Cell><Cell>Sharpe Ratio</Cell><Cell>Custom</Cell>
+    <Cell>Equity DD %</Cell><Cell>Trades</Cell><Cell>Back Result</Cell>
+    <Cell>Trades 2</Cell><Cell>InpFastEMA</Cell>
+  </Row>
+  <Row>
+    <Cell>4</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>9100</Cell><Cell>12</Cell>
+  </Row>
+  <Row>
+    <Cell>9</Cell><Cell>11200</Cell><Cell>1200</Cell><Cell>6</Cell>
+    <Cell>1.4</Cell><Cell>2.5</Cell><Cell>1.1</Cell><Cell>0</Cell>
+    <Cell>8</Cell><Cell>200</Cell><Cell>8800</Cell><Cell>12</Cell>
+  </Row>
+</Table>
+FWDWARD
+    exit 0;;
+  esac
   # An optimization writes one table, the way the terminal does.
   cat > "${report}.xml" <<OPT
 <?xml version="1.0" encoding="ANSI"?>
@@ -479,6 +598,117 @@ class TestLocalChecks:
         assert result.status == vt.SKIPPED
         assert "--set-file" in result.note
         assert verifier.launches == 0
+
+
+def _verifier_with_set(
+    fake_terminal: Path, tmp_path: Path, *, set_file: str = "MyEA.set", modes=(0, 1)
+) -> vt.Verifier:
+    """A verifier that will really optimize: those checks need a .set to sweep."""
+    return vt.Verifier(
+        terminal=fake_terminal,
+        expert="Examples/MACD/MACD Sample",
+        symbol="EURUSD",
+        period="H1",
+        from_date="2022.01.01",
+        to_date="2023.03.31",
+        out_dir=tmp_path / f"reports-{set_file or 'noset'}",
+        modes=list(modes),
+        set_file=set_file,
+        timeout=60.0,
+        allow_runs=True,
+    )
+
+
+class TestForwardCell:
+    """Note 1's last assumption: an un-rerun pass is blank, or is it 0?"""
+
+    def test_it_needs_a_set_file_to_optimize_with(self, verifier) -> None:
+        result = verifier.check_11_forward_cell()
+        assert result.status == vt.SKIPPED
+        assert "--set-file" in result.note and "--with-forward-opt" in result.note
+        assert verifier.launches == 0, "it must not guess without a set file"
+
+    def test_a_pass_left_without_a_cell_confirms_the_safe_reading(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "fwdopt-empty")
+        result = _verifier_with_set(fake_terminal, tmp_path).check_11_forward_cell()
+        assert result.status == vt.PASS
+        evidence = "\n".join(result.evidence)
+        # one row with no Forward Result cell at all, one written empty, one run
+        assert "absent=1" in evidence
+        assert "empty=1" in evidence
+        assert "non-zero=1" in evidence
+        assert "None-is-missing is the right reading" in result.note
+
+    def test_zeros_where_passes_never_ran_contradict_the_reader(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "fwdopt-zeros")
+        result = _verifier_with_set(fake_terminal, tmp_path).check_11_forward_cell()
+        assert result.status == vt.FAIL
+        evidence = "\n".join(result.evidence)
+        assert "zero=2" in evidence and "absent=0" in evidence
+        # the note has to name the tie-breaker, not just report the counts
+        assert "Contradicted" in result.note
+        assert "Forward Results tab" in result.note
+        assert "treat 0 as missing" in result.note
+
+    def test_a_run_that_forwarded_every_pass_proves_nothing(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "fwdopt-all")
+        result = _verifier_with_set(fake_terminal, tmp_path).check_11_forward_cell()
+        assert result.status == vt.UNKNOWN
+        assert "the question never arose" in result.note
+
+    def test_a_table_with_no_forward_column_is_not_read_as_empty_cells(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard that keeps a non-forward run from scoring a free PASS.
+
+        Without a Forward Result column every pass looks 'absent', which is the
+        same shape the safe reading has — so the check has to notice first that
+        the run never split the period.
+        """
+        monkeypatch.setenv("FAKE_MODE", "fwdopt-noforward")
+        result = _verifier_with_set(fake_terminal, tmp_path).check_11_forward_cell()
+        assert result.status == vt.UNKNOWN
+        assert "no Back/Forward Result columns" in result.note
+
+    def test_it_quotes_the_forwarded_share_from_the_documentation(self) -> None:
+        assert vt.DOCUMENTED_FORWARDED_SHARE == {1: 0.10, 2: 0.25}
+
+    def test_the_expected_re_run_count_is_shown_as_evidence(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The counts alone mean nothing without the documented share beside them."""
+        monkeypatch.setenv("FAKE_MODE", "fwdopt-all")
+        result = _verifier_with_set(fake_terminal, tmp_path).check_11_forward_cell()
+        evidence = "\n".join(result.evidence)
+        assert "re-running 10% of the best passes" in evidence
+        assert "passes=3" in evidence
+
+    def test_the_check_is_registered_gated_and_listed(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = next(c for c in vt.CHECKS if c[0] == "11")
+        assert entry[2] is True and entry[3] == "--with-forward-opt"
+        result = _run_cli(fake_terminal, tmp_path, monkeypatch, ["--list"])
+        assert result.exit_code == 0
+        assert "11" in result.stdout and "--with-forward-opt" in result.stdout
+
+    def test_the_cli_skips_it_without_the_opt_in_flag(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = _run_cli(
+            fake_terminal,
+            tmp_path,
+            monkeypatch,
+            ["--only", "11", "--yes", "--set-file", "MyEA.set"],
+        )
+        assert result.exit_code == 0
+        assert "opt-in: pass --with-forward-opt" in result.stdout
 
 
 class TestReadOnlyGuard:

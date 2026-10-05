@@ -30,7 +30,8 @@ python examples/mql_companion/verify_on_terminal.py --yes --json verify.json
 
 The check numbers below are the script's numbers. Nothing launches without
 `--yes`, the expensive checks are opt-in (`--with-model4`, `--with-grace`,
-`--with-stability`, `--with-optimization`, `--with-bridge`), and nothing in the
+`--with-stability`, `--with-optimization`, `--with-bridge`, `--with-forward-opt`), and
+nothing in the
 script can place an order — the only bridge tools it may call are the read-only
 names in `READ_ONLY_TOOLS`, and any other name raises. The report ends with a
 `paste this back` block; send that and these notes can be turned into answers.
@@ -84,12 +85,29 @@ out of sample, and `median_degradation_pct` would read 100%. `analyze_optimizati
 cannot tell the two apart from the file alone, so it warns when *every* forward value in
 the table is exactly 0.
 
-Settling that one needs a forward *optimization* report, which no current check runs
-(check 9 optimizes without a forward split): run one with `ForwardMode=1`, then compare
-how many `Forward Result` cells the XML populates against how many rows the terminal's
-Forward Results tab shows. Same count with the rest empty means the reader is right; a
-`0` where the tab shows nothing means the analysis has to treat 0 as missing whenever
-coverage is partial.
+Settling that one is check 11: an optimization with `ForwardMode=1` and `Optimization=1`
+that classifies every pass's `Forward Result` cell against the share MetaQuotes documents
+as forwarded (10% of a slow complete search).
+
+```bash
+python examples/mql_companion/verify_on_terminal.py --yes --only 11 \
+    --with-forward-opt --set-file MyEA.set
+```
+
+- **PASS** — some passes carry no cell at all, or an empty one. None-is-missing is then the
+  right reading, partial coverage is safe as written, and the all-zero warning is a signal
+  rather than the only defence. The assumption above is retired.
+- **FAIL** — every row carries a cell and some hold exactly `0`, although only about a
+  tenth of the passes could have been re-run. The terminal's Forward Results tab is then the
+  tie-breaker: a row the tab shows blank while the XML holds 0 means `analyze_optimization`
+  has to treat 0 as missing whenever coverage is partial.
+- **UNKNOWN** — the table has no Back/Forward Result columns (so the run never split the
+  period), or every pass carries a non-zero forward value (so this run re-ran them all and
+  the question never arose). Re-run with a `.set` that sweeps several times the share.
+
+Check 9 still optimizes without a forward split; the two answer different questions —
+whether a pass table is written at all, and what that table holds for the passes the
+forward stage skipped.
 
 ---
 

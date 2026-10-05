@@ -24,6 +24,7 @@ Usage (from the repository root)::
     python examples/mql_companion/verify_on_terminal.py --yes --json verify.json
     python examples/mql_companion/verify_on_terminal.py --only 1,2,6 --yes
     python examples/mql_companion/verify_on_terminal.py --yes --with-model4
+    python examples/mql_companion/verify_on_terminal.py --yes --with-forward-opt
 
 Checks are numbered to match ``REVIEW-NOTES.md``. The ones that need a terminal
 are the point of the script; the ones that do not (environment, decode order,
@@ -89,6 +90,12 @@ CHECKS: Tuple[Tuple[str, str, bool, str], ...] = (
     ("8", "ExpertParameters subpath rejection (notes #8)", False, ""),
     ("9", "optimization report extension (notes #9)", True, "--with-optimization"),
     ("10", "MCP bridge, read-only smoke", True, "--with-bridge"),
+    (
+        "11",
+        "Forward Result cell of a pass MT5 never re-ran (notes #1)",
+        True,
+        "--with-forward-opt",
+    ),
 )
 
 
@@ -199,6 +206,15 @@ DOCUMENTED_FORWARD_LABEL: Dict[int, str] = {1: "1/2", 2: "1/3", 3: "1/4"}
 _SPLIT_TOLERANCE = 0.02
 
 
+#: MetaQuotes' Strategy Optimization page, quoted in REVIEW-NOTES.md note 1:
+#: after optimizing on the first part of the period, 10% of the best runs (slow
+#: complete search, ``Optimization=1``) or 25% (fast genetic, ``=2``) are
+#: re-tested on the forward part. A forward optimization therefore *has* to
+#: contain passes the terminal never re-ran, which is what lets check 11 observe
+#: what their ``Forward Result`` cells hold instead of reasoning about it.
+DOCUMENTED_FORWARDED_SHARE: Dict[int, float] = {1: 0.10, 2: 0.25}
+
+
 def _split_line(mode: int, back: Any, forward: Any) -> str:
     """Describe one ForwardMode as a back/forward date split, if the reports
     carry dates at all, and say whether it is the split MetaQuotes documents."""
@@ -224,6 +240,42 @@ def _split_line(mode: int, back: Any, forward: Any) -> str:
     if abs(observed - documented) <= _SPLIT_TOLERANCE:
         return f"{line} | matches the documented {label}"
     return f"{line} | differs from the documented {label}"
+
+
+def _forward_cells(passes: Sequence[Any]) -> Dict[str, Any]:
+    """Sort every pass's Forward Result cell into the shapes MT5 could write.
+
+    ``absent`` — the row had fewer cells than the header, so the key is not
+    there at all; ``empty`` — the cell was written and held nothing, which
+    ``tester_report`` turns into None. Both are excluded from the forward
+    analysis, so both are the safe reading. ``zero`` and ``non_zero`` are the
+    numeric cells, and zero is the dangerous one: on the file alone it is
+    indistinguishable from a forward half that really made nothing.
+    """
+    counts: Dict[str, Any] = {"absent": 0, "empty": 0, "zero": 0, "non_zero": 0}
+    samples: List[str] = []
+    shown: set = set()
+    for item in passes:
+        metrics = getattr(item, "metrics", None) or {}
+        if "forward_result" not in metrics:
+            kind, value = "absent", "<no cell>"
+        else:
+            value = metrics["forward_result"]
+            if not isinstance(value, (int, float)):
+                kind = "empty"
+            elif float(value) == 0.0:
+                kind = "zero"
+            else:
+                kind = "non_zero"
+        counts[kind] = int(counts[kind]) + 1
+        if kind not in shown:
+            shown.add(kind)
+            samples.append(
+                f"pass {getattr(item, 'number', '?')}: {kind} cell, "
+                f"forward_result={value!r}"
+            )
+    counts["samples"] = samples
+    return counts
 
 
 class _SizeSampler(threading.Thread):
@@ -921,6 +973,107 @@ class Verifier:
         )
         return result
 
+    def check_11_forward_cell(self) -> Result:
+        """What MT5 writes into the Forward Result cell of a pass it never re-ran.
+
+        The last open question in REVIEW-NOTES.md note 1. The reader excludes a
+        cell that is not a number, so partial coverage is safe *if* an un-rerun
+        pass is left without a value; if a build writes ``0`` there instead,
+        every such pass reads as an out-of-sample result of exactly zero and
+        ``median_degradation_pct`` reports a 100% loss the strategy never had.
+        ``analyze_optimization`` warns when a whole forward column is 0 but
+        cannot tell the two apart from the file alone — this run can, because the
+        platform documents how many passes it forwards.
+        """
+        result = Result("11", CHECKS[11][1])
+        started = time.monotonic()
+        if not self.set_file:
+            result.status = SKIPPED
+            result.note = (
+                "Needs a .set file in MQL5/Profiles/Tester/ to optimize with: "
+                "re-run with --set-file MyEA.set --with-forward-opt. The set has "
+                "to sweep enough passes that only a fraction of them can be "
+                "forwarded (the documented share is 10% of a slow complete "
+                "search), or every pass is re-run and the question never arises."
+            )
+            return result
+        mode = next((m for m in self.modes if m in DOCUMENTED_FORWARD_SHARE), 1)
+        optimization = 1  # slow complete search: the documented share is 10%
+        record = self.launch(forward_mode=mode, tag="fwdopt", optimization=optimization)
+        result.seconds = round(time.monotonic() - started, 2)
+        if record["error"]:
+            result.status = UNKNOWN
+            result.add(record["error"])
+            return result
+
+        outcome = record["outcome"] or {}
+        report = outcome.get("report")
+        passes = list(getattr(report, "passes", None) or [])
+        if not passes:
+            result.status = UNKNOWN
+            result.add("the run wrote no pass table")
+            result.note = (
+                "Check 9 is the one that asks whether an optimization writes a "
+                "table at all; with no table there is no cell to inspect."
+            )
+            return result
+
+        cells = _forward_cells(passes)
+        share = DOCUMENTED_FORWARDED_SHARE[optimization]
+        expected = max(1, int(round(len(passes) * share)))
+        result.add(f"ForwardMode={mode}, Optimization={optimization} (slow complete)")
+        result.add(
+            f"passes={len(passes)} | forward cells: absent={cells['absent']} "
+            f"empty={cells['empty']} zero={cells['zero']} "
+            f"non-zero={cells['non_zero']}"
+        )
+        result.add(
+            f"the platform documents re-running {share:.0%} of the best passes, "
+            f"so about {expected} of {len(passes)} were forwarded"
+        )
+        for line in cells["samples"]:
+            result.add(str(line))
+
+        if not getattr(report, "forward", False):
+            result.status = UNKNOWN
+            result.note = (
+                "The table carries no Back/Forward Result columns, so this run "
+                "was not a forward optimization and there is no cell to read. "
+                "Check the .set and that this build honours ForwardMode together "
+                "with Optimization."
+            )
+            return result
+        if cells["absent"] or cells["empty"]:
+            result.status = PASS
+            result.note = (
+                "Settled for this build: a pass the terminal did not re-run is "
+                "left without a Forward Result value, so None-is-missing is the "
+                "right reading, partial coverage is safe as written, and the "
+                "all-zero warning in analyze_optimization is a signal rather than "
+                "the only defence. Note 1 can drop its last assumption."
+            )
+        elif cells["zero"]:
+            result.status = FAIL
+            result.note = (
+                f"Contradicted: all {len(passes)} rows carry a Forward Result "
+                f"cell, although the platform documents re-running about "
+                f"{expected} of them, and {cells['zero']} hold exactly 0. Either "
+                "this build forwards every pass or it writes 0 into the cells of "
+                "passes it never ran, and on the file alone the two are the same "
+                "number. The terminal's Forward Results tab decides which: a row "
+                "the tab shows blank while the XML holds 0 means "
+                "analyze_optimization has to treat 0 as missing whenever coverage "
+                "is partial."
+            )
+        else:
+            result.status = UNKNOWN
+            result.note = (
+                "Every pass carries a non-zero forward value, so this run "
+                "re-ran them all and the question never arose. Re-run with a "
+                ".set that sweeps several times the documented forwarded share."
+            )
+        return result
+
     # -- driving ------------------------------------------------------------
 
     def run(
@@ -938,6 +1091,7 @@ class Verifier:
             "8": self.check_8_expert_parameters,
             "9": self.check_9_optimization_extension,
             "10": self.check_10_bridge,
+            "11": self.check_11_forward_cell,
         }
         results: List[Result] = []
         for check_id, title, needs_terminal, flag in CHECKS:
@@ -1083,7 +1237,9 @@ def _id_list(raw: str) -> List[str]:
     help="ForwardMode values to try for the mapping table.",
 )
 @click.option(
-    "--set-file", default="", help="A .set under MQL5/Profiles/Tester for check 9."
+    "--set-file",
+    default="",
+    help="A .set under MQL5/Profiles/Tester, for checks 9 and 11.",
 )
 @click.option(
     "--timeout", default=1800.0, show_default=True, help="Seconds per terminal run."
@@ -1102,6 +1258,12 @@ def _id_list(raw: str) -> List[str]:
 )
 @click.option(
     "--with-bridge", is_flag=True, help="Opt in to read-only MCP bridge calls."
+)
+@click.option(
+    "--with-forward-opt",
+    is_flag=True,
+    help="Opt in to the forward optimization run (check 11): a two-stage "
+    "optimization, so it is the slowest check here.",
 )
 @click.option(
     "--yes", is_flag=True, help="Actually launch the terminal. Without it: plan only."
@@ -1139,6 +1301,7 @@ def main(**options: Any) -> None:
         "--with-stability": options["with_stability"],
         "--with-optimization": options["with_optimization"],
         "--with-bridge": options["with_bridge"],
+        "--with-forward-opt": options["with_forward_opt"],
     }
     results = verifier.run(_id_list(options["only"]), _id_list(options["skip"]), opt_in)
     click.echo(render_report(results, verifier))
