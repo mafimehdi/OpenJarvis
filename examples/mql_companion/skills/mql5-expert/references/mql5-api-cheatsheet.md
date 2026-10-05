@@ -25,6 +25,7 @@ void OnTimer()                       { }
 void OnTrade()                       { }
 void OnChartEvent(const int id, const long &lparam,
                   const double &dparam, const string &sparam) { }
+// Indicator event, kept here for reference: an Expert Advisor never receives it.
 int  OnCalculate(const int rates_total, const int prev_calculated,
                  const datetime &time[], const double &open[],
                  const double &high[], const double &low[],
@@ -140,6 +141,46 @@ if(!trade.PositionModify(ticket, sl, tp))
                trade.ResultRetcode(), trade.ResultRetcodeDescription());
 ```
 
+`SetTypeFillingBySymbol` reads `SYMBOL_FILLING_MODE` for you, and the reference
+documents the tie-break: when a symbol allows both `SYMBOL_FILLING_FOK` and
+`SYMBOL_FILLING_IOC`, it sets **`ORDER_FILLING_FOK`** — all-or-nothing, so no
+partial fills
+(mql5.com/en/docs/standardlibrary/tradeclasses/ctrade/ctradesettypefillingbysymbol).
+If a strategy needs partial filling, call `SetTypeFilling(ORDER_FILLING_IOC)`
+yourself instead of assuming the symbol-derived choice.
+
+### Which filling mode a request may carry
+
+`ENUM_ORDER_TYPE_FILLING` has four members — `ORDER_FILLING_FOK`,
+`ORDER_FILLING_IOC`, `ORDER_FILLING_RETURN` and `ORDER_FILLING_BOC` — and which
+ones are legal depends on the symbol's **execution mode** (`SYMBOL_TRADE_EXEMODE`)
+as well as on `SYMBOL_FILLING_MODE`
+(mql5.com/en/docs/constants/tradingconstants/orderproperties#enum_order_type_filling):
+
+| Execution mode | FOK / IOC | RETURN |
+|---|---|---|
+| Instant, Request | allowed regardless of the symbol's flags | always allowed |
+| **Market** | only if the symbol's flags allow it | **disabled regardless of the symbol's flags** |
+| Exchange | only if the symbol's flags allow it | always allowed |
+
+The two ways this produces retcode `10030` (`INVALID_FILL`):
+
+* On a **Market Execution** broker, `ORDER_FILLING_RETURN` is refused whatever
+  `SYMBOL_FILLING_MODE` reports — so "the symbol accepts it" is not the whole test.
+* A **pending order** should carry `ORDER_FILLING_RETURN` regardless of execution
+  mode, because it is not meant to execute at the moment it is sent. `BOC` (book
+  or cancel) exists only for limit and stop-limit orders.
+
+Read both properties before choosing one by hand:
+
+```mql5
+ENUM_SYMBOL_TRADE_EXECUTION exe =
+   (ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_EXEMODE);
+long flags = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+bool fok_allowed = (flags & SYMBOL_FILLING_FOK) != 0;
+bool ioc_allowed = (flags & SYMBOL_FILLING_IOC) != 0;
+```
+
 ## Trading with a raw request (when CTrade is not enough)
 
 ```mql5
@@ -163,13 +204,34 @@ if(!OrderSend(req, res))
 ## Margin / profit math before sending
 
 ```mql5
+// OrderCalcMargin(action, symbol, volume, price_open, margin)
+// Documented to compute as if the account held no pending orders and no open
+// positions, so this is the margin of *this* order alone — on a netting account
+// it is not the new total after the order.
 double margin = 0.0;
+bool   fits   = false;
 if(OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lots, price, margin))
-   bool ok = (margin <= AccountInfoDouble(ACCOUNT_MARGIN_FREE));
+   fits = (margin <= AccountInfoDouble(ACCOUNT_MARGIN_FREE));
 
+// OrderCalcProfit(action, symbol, volume, price_open, price_close, profit)
+// The fifth argument is a CLOSE PRICE, not a stop loss. Passing `sl` there is
+// legal and useful — it prices the exit at the stop — but it is not "the
+// profit of the trade", it is the loss if the stop is hit. Pass the price you
+// actually intend to exit at when that is the question.
 double profit = 0.0;
-OrderCalcProfit(ORDER_TYPE_SELL, _Symbol, lots, price, sl, profit);
+OrderCalcProfit(ORDER_TYPE_SELL, _Symbol, lots, price, sl, profit);   // loss at the stop
+
+// both return false on failure (and an invalid order type) — check them:
+if(!OrderCalcProfit(ORDER_TYPE_BUY, _Symbol, lots, price, price + 50 * _Point, profit))
+   PrintFormat("OrderCalcProfit failed: %d", GetLastError());
 ```
+
+Signatures as the reference gives them
+(mql5.com/en/docs/trading/ordercalcmargin, .../ordercalcprofit): five arguments
+for margin, six for profit, the last one in each case the variable written to.
+Both are `[out]`-style, so the returned `bool` is the only success signal — an
+unchecked `false` leaves the previous value of the variable sitting there, which
+reads as a real number.
 
 ## Time and bars
 
@@ -235,7 +297,15 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 Prefer this over polling `PositionsTotal()` right after `OrderSend`: the fill
 arrives asynchronously. Watch `TRADE_TRANSACTION_DEAL_ADD` for opens and closes:
 a position changed *by a deal* does not raise `TRADE_TRANSACTION_POSITION`, which
-reports only server-side changes made without one (SL/TP, volume).
+reports only server-side changes made without one (SL/TP, volume, open price). The
+reference puts it the same way — "Position change (adding, changing or closing), as
+a result of a deal execution, does not lead to the occurrence of
+TRADE_TRANSACTION_POSITION"
+(mql5.com/en/docs/constants/tradingconstants/enum_trade_transaction_type) — and
+third-party write-ups of this event get it backwards often enough that the citation
+is worth keeping beside the claim. For `TRADE_TRANSACTION_REQUEST` the same page
+says only `type` is meaningful in the structure; the detail is in the handler's
+`request` and `result` parameters.
 
 ## Trailing stop (the version that does not fight the broker)
 

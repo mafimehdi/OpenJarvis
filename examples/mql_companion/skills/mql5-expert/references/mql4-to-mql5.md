@@ -50,9 +50,15 @@ The three structural changes that produce ~80% of the work:
 * **Hedging vs netting accounts.** On a netting account a second opposite
   position reduces or closes the first instead of opening a new one. Check
   `AccountInfoInteger(ACCOUNT_MARGIN_MODE)`.
-* **Filling mode.** MQL4 had no equivalent; MQL5 requires a mode the symbol
-  accepts (`ORDER_FILLING_FOK`/`IOC`/`RETURN`). Use
-  `trade.SetTypeFillingBySymbol(_Symbol)`.
+* **Filling mode.** MQL4 had no equivalent; MQL5 requires a mode the request is
+  allowed to carry, and "the symbol accepts it" is not the whole test. The
+  enumeration has four members — `ORDER_FILLING_FOK`, `ORDER_FILLING_IOC`,
+  `ORDER_FILLING_RETURN`, `ORDER_FILLING_BOC` (limit and stop-limit orders only) —
+  and `ORDER_FILLING_RETURN` is refused under Market Execution whatever
+  `SYMBOL_FILLING_MODE` reports, while pending orders should carry `RETURN`
+  regardless. Use `trade.SetTypeFillingBySymbol(_Symbol)` and let it read the
+  symbol; the execution-mode table is in the API cheatsheet. Getting this wrong
+  is retcode `10030` (`INVALID_FILL`), not a warning.
 * **Deviation is in points, not "slippage".** `trade.SetDeviationInPoints(n)`.
 * **`iCustom` argument order** differs, and the called indicator must be
   compiled for MQL5 — an MQL4 `.mq4` indicator cannot be attached.

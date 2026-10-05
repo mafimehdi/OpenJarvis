@@ -959,6 +959,19 @@ REAL_TRADE_TRANSACTIONS = frozenset(
     }
 )
 
+#: ENUM_ORDER_TYPE_FILLING as the reference lists it
+#: (mql5.com/en/docs/constants/tradingconstants/orderproperties,
+#: #enum_order_type_filling). BOC is the one most write-ups omit; it exists and
+#: is limit/stop-limit only.
+REAL_ORDER_FILLING = frozenset(
+    {
+        "ORDER_FILLING_FOK",
+        "ORDER_FILLING_IOC",
+        "ORDER_FILLING_RETURN",
+        "ORDER_FILLING_BOC",
+    }
+)
+
 # Runtime errors, Account/Trade section plus the one the Sleep note cites, from
 # mql5.com/en/docs/constants/errorswarnings/errorcodes
 REAL_RUNTIME_ERRORS = frozenset(
@@ -986,6 +999,44 @@ MQL4_ONLY_STATE_FUNCTIONS = (
     "IsDemo",
     "IsDllsAllowed",
 )
+
+
+def _flat(text: str) -> str:
+    """Prose with the line wrapping and ``**emphasis**`` taken out.
+
+    These pages wrap near 78 columns and mark code with backticks and emphasis,
+    so a phrase that matters can straddle a break or sit inside a delimiter;
+    matching the raw text fails on prose that plainly says the thing.
+    """
+    return " ".join(text.replace("**", "").replace("`", "").split())
+
+
+def _call_sites(text: str, name: str) -> int:
+    """How many times ``name(`` opens a call in ``text``."""
+    return len(re.findall(rf"\b{re.escape(name)}\s*\(", text))
+
+
+def _call_arguments(text: str, name: str, site: int = 0) -> List[str]:
+    """The arguments of one ``name(...)`` call, split on commas at depth 0."""
+    starts = [m.end() for m in re.finditer(rf"\b{re.escape(name)}\s*\(", text)]
+    assert starts, f"no call to {name} in this text"
+    index, depth, current, out = starts[site], 1, "", []
+    while index < len(text) and depth:
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                out.append(current)
+                break
+        if char == "," and depth == 1:
+            out.append(current)
+            current = ""
+        else:
+            current += char
+        index += 1
+    return [argument.strip() for argument in out if argument.strip()]
 
 
 class TestSkillKnowledgeMatchesTheMql5Reference:
@@ -1026,6 +1077,7 @@ class TestSkillKnowledgeMatchesTheMql5Reference:
         families = {
             "TRADE_TRANSACTION_": REAL_TRADE_TRANSACTIONS,
             "ERR_": REAL_RUNTIME_ERRORS,
+            "ORDER_FILLING_": REAL_ORDER_FILLING,
         }
         invented: Dict[str, List[str]] = {}
         for path in self._knowledge_files():
@@ -1068,6 +1120,138 @@ class TestSkillKnowledgeMatchesTheMql5Reference:
             "that is the MQL4 rule; MQL5 suspends the EA in the tester as well"
         )
         assert "ERR_SLEEP_ERROR" in sleep_note
+
+    def test_the_calc_functions_are_called_with_the_documented_arguments(
+        self,
+    ) -> None:
+        """`OrderCalcProfit`'s fifth argument is a close price, not a stop loss.
+
+        The snippet passed `sl` there — six arguments, so it compiles and the
+        arity looks right — under a heading about profit math before sending,
+        which reads as "the profit of the trade" and computes the loss if the
+        stop is hit. Both signatures are documented
+        (mql5.com/en/docs/trading/ordercalcmargin and .../ordercalcprofit): five
+        arguments for margin, six for profit, the last of each the variable
+        written to, so the returned bool is the only success signal.
+        """
+        cheatsheet = self._cheatsheet()
+        start = cheatsheet.index("## Margin / profit math")
+        # the next heading of the same level, whichever section that turns out to
+        # be — naming one hardcodes an order the page does not promise
+        section = _flat(cheatsheet[start:cheatsheet.index("\n## ", start + 1)])
+
+        assert "price_close" in section, "the fifth parameter is never named"
+        assert "not a stop loss" in section.lower(), (
+            "passing sl there is legal and useful, but the page has to say what "
+            "it then computes"
+        )
+        # the caveat lives in a code comment, whose `//` markers survive the
+        # flattening — match the phrase up to the line break it straddles
+        assert "no pending orders and no open" in section and "netting" in section, (
+            "OrderCalcMargin is documented to ignore what the account already "
+            "holds, which is the difference between this order's margin and the "
+            "new total on a netting account"
+        )
+        for name, arity in (("OrderCalcMargin", 5), ("OrderCalcProfit", 6)):
+            for site in range(_call_sites(cheatsheet, name)):
+                arguments = _call_arguments(cheatsheet, name, site)
+                assert len(arguments) == arity, (
+                    f"{name} is documented with {arity} arguments; call {site} "
+                    f"has {len(arguments)}: {arguments}"
+                )
+
+    def test_the_ea_template_checks_margin_with_the_documented_arity(self) -> None:
+        """The template is the file a model is most likely to copy wholesale."""
+        template = (SKILL_DIR / "templates" / "ea-template.mq5").read_text(
+            encoding="utf-8"
+        )
+        assert _call_sites(template, "OrderCalcMargin"), (
+            "the template no longer checks margin before sending"
+        )
+        for site in range(_call_sites(template, "OrderCalcMargin")):
+            assert len(_call_arguments(template, "OrderCalcMargin", site)) == 5
+
+    def test_the_filling_mode_rules_name_the_market_execution_exception(
+        self,
+    ) -> None:
+        """Which filling modes are legal depends on the execution mode too.
+
+        Both pages said "a mode the symbol accepts" and listed three of the four
+        members, so a porter on a Market Execution broker could pick
+        ORDER_FILLING_RETURN because SYMBOL_FILLING_MODE appeared to allow it —
+        which the reference says is disabled in that mode regardless of the
+        symbol's flags. The result is retcode 10030, INVALID_FILL: the code
+        round 16 relabelled in the bridge.
+        """
+        cheatsheet = _flat(self._cheatsheet())
+        porting = _flat(
+            (SKILL_DIR / "references" / "mql4-to-mql5.md").read_text(encoding="utf-8")
+        )
+        for member in sorted(REAL_ORDER_FILLING):
+            assert member in cheatsheet and member in porting, (
+                f"{member} is a documented filling type and one page omits it"
+            )
+        assert "disabled regardless of the symbol's flags" in cheatsheet
+        assert "refused under Market Execution whatever" in porting
+        assert "10030" in cheatsheet and "10030" in porting, (
+            "name the retcode this mistake produces"
+        )
+        assert "pending order" in cheatsheet.lower(), (
+            "pending orders should carry RETURN whatever the execution mode"
+        )
+        assert "pending orders" in porting.lower()
+
+    def test_the_filling_tie_break_is_the_documented_one(self) -> None:
+        """When a symbol allows both FOK and IOC, the reference says FOK wins.
+
+        "avoids retcode 10030" was true and incomplete: it does not say which
+        mode arrives, and FOK means all-or-nothing, so a strategy written
+        expecting partial fills silently stops having them.
+        """
+        cheatsheet = _flat(self._cheatsheet())
+        assert "sets ORDER_FILLING_FOK" in cheatsheet
+        assert "SetTypeFilling(ORDER_FILLING_IOC)" in cheatsheet
+
+    def test_the_transaction_type_claim_keeps_its_citation(self) -> None:
+        """The claim is right and third-party write-ups get it backwards.
+
+        "A position changed by a deal does not raise TRADE_TRANSACTION_POSITION"
+        is the reference's own wording; several published guides say the event
+        fires for deal-driven changes too, so the source stays beside the claim.
+        """
+        cheatsheet = self._cheatsheet()
+        start = cheatsheet.index("## Event-driven confirmation")
+        section = _flat(cheatsheet[start:cheatsheet.index("\n## ", start + 1)])
+        vendor_wording = "does not lead to the occurrence of TRADE_TRANSACTION_POSITION"
+        assert vendor_wording in section
+        assert "enum_trade_transaction_type" in section
+
+    def test_the_ea_skeleton_marks_the_event_an_ea_never_receives(self) -> None:
+        cheatsheet = self._cheatsheet()
+        skeleton = cheatsheet[cheatsheet.index("## Program skeleton"):]
+        skeleton = skeleton[: skeleton.index("## Indicators")]
+        assert "OnCalculate" in skeleton, "the signature is worth keeping"
+        assert "never receives" in _flat(skeleton), (
+            "but an EA skeleton that lists OnCalculate without saying so invites "
+            "a model to define it in an EA and wait for ticks that never come"
+        )
+
+    def test_the_sourced_claims_keep_their_sources(self) -> None:
+        """Every claim this round corrected now rests on a page a reader can open."""
+        cheatsheet = self._cheatsheet()
+        for citation in (
+            "ordercalcmargin",
+            "ordercalcprofit",
+            "ctradesettypefillingbysymbol",
+            "enum_order_type_filling",
+            "enum_trade_transaction_type",
+        ):
+            assert citation in cheatsheet, f"the claim resting on {citation} lost it"
+
+    def _cheatsheet(self) -> str:
+        return (SKILL_DIR / "references" / "mql5-api-cheatsheet.md").read_text(
+            encoding="utf-8"
+        )
 
     def test_the_instruction_does_not_recommend_mql4_only_functions(self) -> None:
         """The instruction used to tell the model to call ``IsTradeAllowed()``.
