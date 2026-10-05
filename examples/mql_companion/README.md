@@ -66,7 +66,11 @@ The skill, the preset config, and `mql-bench` all work anywhere.
 python examples/mql_companion/compile_loop.py --source MyEA.mq5 --compile-only
 ```
 
-Useful in CI or under `jarvis scheduler`: exit code 0 means zero errors.
+Useful in CI or under `jarvis scheduler`: exit code 0 means zero errors **and** the
+`.ex5` on disk. A zero-error log that wrote no binary exits 2 instead — MetaEditor's
+CLI is documented to fail exactly that way on large modular projects
+(mql5.com/en/forum/491543, fixed in build 5200), and `--allow-missing-artifact`
+accepts the log alone if your build puts the binary somewhere else.
 
 ### 2. The full fix loop
 
@@ -148,11 +152,16 @@ Scoring is deterministic and structural (no compiler needed): `required` API sur
    not a clean build.
 7. **Fix** — the diagnostics go back to the agent with the current source; the answer
    is extracted from its ```mql5 fence and written back.
-8. **Repeat** until zero errors, `--max-rounds` is hit, or the model returns an
-   unchanged file (loop guard — it stops rather than burning rounds).
+8. **Repeat** until zero errors, `--max-rounds` is hit, or a fix round leaves the file
+   byte-identical (loop guard — it stops rather than burning rounds). In
+   `--mode agent-tools` the file is the only evidence there is, so the guard reads it
+   back from disk instead of trusting the agent's summary of its own patch.
 
-Exit codes: **0** clean compile, **1** still failing after the budget, **2** toolchain
-problem (no MetaEditor, unreadable source).
+Exit codes: **0** clean compile — zero errors *and* the `.ex5`/`.ex4` that compile owes
+on disk, **1** still failing after the budget, **2** toolchain problem (no MetaEditor,
+unreadable source, no readable compile log, or a zero-error log that wrote no binary).
+`--syntax-only` owes no artifact, and `--allow-missing-artifact` accepts a build that
+produced none.
 
 ## The `mql5-expert` Skill
 

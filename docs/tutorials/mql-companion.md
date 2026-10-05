@@ -77,7 +77,7 @@ round 0 (compile only)
 FAILED — 2 error(s).
 ```
 
-Exit codes: **0** clean compile, **1** still failing, **2** toolchain problem (MetaEditor not found, unreadable source, no readable compile log). Add `--json-out report.json` for a machine-readable round-by-round report, and `--syntax-only` to pass `/s` (parse check, no artifact).
+Exit codes: **0** clean compile — zero errors *and* the binary that compile owes on disk, **1** still failing, **2** toolchain problem (MetaEditor not found, unreadable source, no readable compile log, or a zero-error log that wrote no `.ex5`: the CLI's documented silent failure, mql5.com/en/forum/491543, fixed in build 5200). Add `--json-out report.json` for a machine-readable round-by-round report whose top-level `ok` means what the exit code means, while each round keeps the compiler's own verdict under `rounds[].ok`; `--syntax-only` to pass `/s` (parse check, so no artifact is owed); and `--allow-missing-artifact` to accept a zero-error log with no binary beside the source.
 
 ## Step 2: The Fix Loop
 
@@ -87,8 +87,9 @@ flowchart LR
     B --> C[Decode UTF-16 log]
     C --> D[Parse diagnostics]
     D --> E{0 errors?}
-    E -->|yes| F[Check .ex5 artifact]
-    F --> G[Exit 0]
+    E -->|yes| F{.ex5 artifact?}
+    F -->|present| G[Exit 0]
+    F -->|missing| M[Exit 2: no binary]
     E -->|no| H[Backup .roundN.bak]
     H --> I[Agent: diagnostics + source]
     I --> J[Extract mql5 fence]
@@ -105,7 +106,7 @@ python examples/mql_companion/compile_loop.py \
     --max-rounds 5
 ```
 
-Each round snapshots the file as `MyEA.mq5.round1.bak` before rewriting it (`--no-backup` disables this), so a bad fix is always recoverable. The loop stops early if the model returns an unchanged file — that is a loop guard, not a failure to notice: burning the remaining rounds on the same answer would just burn tokens.
+Each round snapshots the file as `MyEA.mq5.round1.bak` before rewriting it (`--no-backup` disables this), so a bad fix is always recoverable. The loop stops early if a fix round leaves the file unchanged — in `--mode agent-tools` that means unchanged *on disk*, since the agent's own summary of its patch is not evidence. It is a loop guard, not a failure to notice: burning the remaining rounds on the same answer would just burn tokens.
 
 Two modes control who writes the file:
 

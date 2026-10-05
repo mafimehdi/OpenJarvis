@@ -84,15 +84,26 @@ UTF-8 with interleaved NULs, so the naive order returns corrupted lines rather t
 raising. `compile_loop.py` compiles, feeds the parsed diagnostics
 (`file(line,col) severity message`) to a `native_react` agent, snapshots the source
 as `<file>.roundN.bak`, and repeats until the build is clean, the round budget runs
-out, or the model returns an unchanged file (a loop guard, not an oversight). Exit
-code is 0 only on a clean compile; `--compile-only` needs no model at all, and
+out, or a fix round leaves the file unchanged — checked on disk, so it covers
+`--mode agent-tools` too, where the agent's summary of its own patch is the only
+other claim (a loop guard, not an oversight). Exit code is 0 only on a clean
+compile, which means zero errors *and* the binary that compile owes; `--compile-only` needs no model at all, and
 `--json-out` writes a round-by-round report for CI or `jarvis scheduler`.
 
 Four MetaEditor behaviours are handled explicitly because they lie. The process exit
 code is reported inverted across builds, so success is decided by the parsed
 `N errors, M warnings` summary and the exit code is advisory. A clean log is not proof
 of a build either: zero errors with no `.ex5` artifact yields a `note` ("silent CLI
-failure or stale artifact") rather than a false success, and the artifact must
+failure or stale artifact") rather than a false success, and `compile_loop.py` now
+honours that note instead of printing `SUCCESS` over it — it reports `NO ARTIFACT`,
+sets `ok: false` and `artifact_missing: true` in `--json-out`, and exits 2 with the
+other toolchain problems, because another model round cannot fix a compiler that
+wrote nothing (`--allow-missing-artifact` relaxes it for builds whose binary lands
+elsewhere; `--syntax-only` and `.mqh` headers owe no artifact at all). The CLI's
+silent failure is documented at mql5.com/en/forum/491543 and was fixed in build
+5200; the exit code's unreliability has a published log behind it too —
+`metaeditor.exe` exiting 1 on a run that reported `Result: 0 error(s), 0
+warning(s)` (mql5.com/en/forum/157533), and the artifact must
 post-date the run, not merely the source, so a previous build's `.ex5` is never
 credited to a rebuild that wrote nothing. The summary may raise the error count — an
 included file's diagnostics are counted without always being listed — but never clear

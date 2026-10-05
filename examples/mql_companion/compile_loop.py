@@ -29,7 +29,11 @@ Usage::
     python examples/mql_companion/compile_loop.py --source MyEA.mq5 \\
         --config configs/openjarvis/examples/mql-assistant.toml
 
-Exit code is 0 only when the source compiles with zero errors.
+Exit code is 0 only when the source compiles with zero errors *and* the binary
+that compile owes is on disk: a zero-error log with no ``.ex5`` beside the source
+is the CLI's silent failure, not a clean compile, and exits 2 like the other
+toolchain problems (``--allow-missing-artifact`` relaxes it). 1 means the source
+still does not compile after the round budget.
 """
 
 from __future__ import annotations
@@ -47,9 +51,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from metaeditor import (  # noqa: E402
     CompileResult,
     compile_source,
+    expects_artifact,
     extract_mql_source,
     find_metaeditor,
 )
+
+#: What a successful build leaves behind, for the message that says it is missing.
+ARTIFACT_NAMES: tuple[str, ...] = (".ex5", ".ex4")
 
 _REWRITE_TOOLS = ["file_read", "think"]
 _AGENT_TOOLS = ["file_read", "file_write", "apply_patch", "think", "knowledge_search"]
@@ -250,6 +258,15 @@ def _build_agent_prompt(source: Path, result: CompileResult) -> str:
     help="Snapshot the source as <file>.roundN.bak before each fix.",
 )
 @click.option(
+    "--allow-missing-artifact",
+    is_flag=True,
+    help="Call a zero-error log a success even when no .ex5/.ex4 appeared beside "
+    "the source. Off by default: MetaEditor's CLI is documented to fail silently "
+    "on large modular projects (0 errors, no artifact — "
+    "mql5.com/en/forum/491543, fixed in build 5200), and a build that produced "
+    "no binary is not a clean compile.",
+)
+@click.option(
     "--json-out",
     default=None,
     type=click.Path(dir_okay=False, path_type=Path),
@@ -271,6 +288,7 @@ def main(
     syntax_only: bool,
     timeout: int,
     backup: bool,
+    allow_missing_artifact: bool,
     json_out: Path | None,
 ) -> None:
     """Compile an MQL source with MetaEditor, fixing errors in a loop."""
@@ -375,6 +393,12 @@ def main(
             if backup:
                 _echo(f"  backup: {_backup(source, round_no)}")
 
+            # Whatever the fix step claims, the file is the only evidence: an
+            # agent that reports a patch it never wrote, and a model that echoes
+            # the source straight back, both leave it byte-identical and would
+            # otherwise spend the whole round budget on the same diagnostics.
+            before_fix = source.read_bytes()
+
             if mode == "agent-tools":
                 prompt = _build_agent_prompt(source, result)
                 try:
@@ -385,6 +409,9 @@ def main(
                 _echo(
                     f"  agent: {str(answer).splitlines()[-1][:120] if answer else ''}"
                 )
+                if source.read_bytes() == before_fix:
+                    _echo("  stopping: the agent changed nothing on disk.")
+                    break
             else:
                 # `Jarvis.ask()` takes no system_prompt kwarg, so the rules go
                 # at the front of the user prompt.
@@ -408,6 +435,9 @@ def main(
                     break
                 previous_body = body
                 source.write_text(body, encoding="utf-8")
+                if source.read_bytes() == before_fix:
+                    _echo("  stopping: the model returned the file unchanged.")
+                    break
                 _echo(f"  wrote {len(body.splitlines())} lines to {source.name}")
     finally:
         if jarvis is not None:
@@ -418,7 +448,29 @@ def main(
         _echo("no compile result")
         sys.exit(2)
 
-    if result.ok:
+    # A zero-error log that owes a binary and produced none is not a clean
+    # compile. `result.ok` stays the log's verdict; this is the build's.
+    missing_artifact = (
+        result.ok
+        and not syntax_only
+        and not allow_missing_artifact
+        and expects_artifact(source)
+        and result.artifact is None
+    )
+
+    if missing_artifact:
+        _echo(
+            f"NO ARTIFACT after {len(rounds)} round(s) — the compiler reported "
+            f"{result.error_count} error(s) but no "
+            f"{'/'.join(ARTIFACT_NAMES)} appeared beside the source."
+        )
+        if result.note:
+            _echo(f"  ! {result.note}")
+        _echo(
+            "  A toolchain problem, not a source problem: another model round "
+            "cannot fix it."
+        )
+    elif result.ok:
         _echo(f"SUCCESS after {len(rounds)} round(s).")
         if result.artifact:
             _echo(f"artifact: {result.artifact}")
@@ -438,7 +490,11 @@ def main(
                     "metaeditor": str(editor),
                     "mode": "compile-only" if compile_only else mode,
                     "model": "" if compile_only else model,
-                    "ok": bool(result.ok),
+                    # The gate CI reads, and it means what the exit code means:
+                    # a zero-error log with no binary is not a success. Each
+                    # round keeps the compiler's own verdict under rounds[].ok.
+                    "ok": bool(result.ok and not missing_artifact),
+                    "artifact_missing": bool(missing_artifact),
                     "rounds": rounds,
                 },
                 indent=2,
@@ -447,6 +503,10 @@ def main(
         )
         _echo(f"report: {json_out}")
 
+    if missing_artifact:
+        # Same reasoning as the unreadable-log case below: another model round
+        # against a compiler that wrote nothing cannot help.
+        sys.exit(2)
     if result.error_text and not result.diagnostics:
         # The documented contract: 2 is a toolchain problem, 1 is a source that
         # still does not compile. "FAILED — 0 error(s)" is neither when

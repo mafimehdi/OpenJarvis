@@ -118,6 +118,8 @@ def _load(name: str) -> ModuleType:
 tester_report = _load("tester_report")
 mt5_mcp_server = _load("mt5_mcp_server")
 metaeditor = _load("metaeditor")
+compile_loop = _load("compile_loop")
+CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 
 
 # --------------------------------------------------------------------------
@@ -1341,3 +1343,43 @@ def test_the_two_metaeditor_hedges_carry_their_evidence() -> None:
         assert thread in source, f"metaeditor.py cites no evidence for {thread}"
         assert thread in section, f"the skill cites no evidence for {thread}"
     assert "build 5200" in source and "build 5200" in section
+
+
+def test_the_published_exit_code_contract_covers_a_build_with_no_binary() -> None:
+    """Three documents print the loop's exit codes; one of them drew the check.
+
+    The tutorial's flowchart already routed "0 errors?" through "Check .ex5
+    artifact" on the way to "Exit 0", and the CHANGELOG called a missing binary
+    "rather than a false success" — while `compile_loop.py` printed `SUCCESS` and
+    exited 0 over exactly that case, so both documents described a gate the code
+    did not have. Every surface that publishes the contract now has to say what
+    the artifact rule is and which flag relaxes it.
+    """
+    surfaces = {
+        "README": README.read_text(encoding="utf-8"),
+        "tutorial": TUTORIAL.read_text(encoding="utf-8"),
+        "CHANGELOG": CHANGELOG.read_text(encoding="utf-8"),
+    }
+    for name, text in surfaces.items():
+        assert "--allow-missing-artifact" in text, (
+            f"{name} publishes the exit codes but not the flag that relaxes the "
+            "artifact rule, so a reader cannot tell the default from the escape"
+        )
+        assert "491543" in text, (
+            f"{name} states the silent-failure behaviour without the report that "
+            "documents it"
+        )
+    assert "Exit 2: no binary" in surfaces["tutorial"], (
+        "the flowchart still draws one way out of the artifact check"
+    )
+
+
+def test_the_flag_the_documents_promise_is_on_the_command() -> None:
+    """The docs may only relax a gate the command actually exposes."""
+    opts = {
+        opt
+        for param in compile_loop.main.params
+        for opt in getattr(param, "opts", ())
+    }
+    assert "--allow-missing-artifact" in opts
+    assert "--syntax-only" in opts and "--json-out" in opts
