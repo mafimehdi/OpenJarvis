@@ -14,7 +14,11 @@ Facts this module is built around (see the MQL5 docs "Compiling from the
 command line" and mql5.com forum threads):
 
 * ``/log`` with no argument writes ``<source>.log`` next to the source file;
-  ``/log:<path>`` writes to an explicit path.
+  ``/log:<path>`` writes to an explicit path. ``/s`` compiles for syntax only,
+  ``/inc:<path>`` points at the MQL5/MQL4 folder that holds the includes.
+* A ``.mq5``/``.mq4`` build leaves its ``.ex5``/``.ex4`` beside the source. A
+  ``.mqh`` header leaves nothing behind: MetaEditor inlines it into whatever
+  includes it and writes only *that* program's artifact.
 * The log is **UTF-16LE** (with a BOM on most builds).
 * Diagnostic lines look like ``<path>(<line>,<col>) : error: <message>``;
   some builds emit ``<message>\\t<file>\\t<line>\\t<col>`` instead.
@@ -22,7 +26,15 @@ command line" and mql5.com forum threads):
   ``0 error(s), 0 warning(s)``.
 * The process exit code is not a reliable success signal (it varies by build
   and by whether the GUI was already running), so success is decided from the
-  parsed log plus the presence of a fresh ``.ex5`` / ``.ex4`` artifact.
+  parsed log plus the presence of a fresh ``.ex5`` / ``.ex4`` artifact. That is
+  not a hedge: a published log shows ``metaeditor.exe`` exiting **1** on a run
+  whose own summary read ``Result: 0 error(s), 0 warning(s)``
+  (mql5.com/en/forum/157533).
+* The CLI can also fail *silently* — ``Result: 0 errors, 0 warnings``, no
+  ``.ex5``, and nothing in the log but the list of includes. Reported for large
+  modular projects and fixed in build 5200 (mql5.com/en/forum/491543), which is
+  why :func:`compile_source` names that case instead of reporting a clean build
+  that produced nothing.
 
 The parser is deliberately tolerant: unknown non-empty lines are preserved in
 :attr:`CompileResult.other_lines` so an LLM fix-up loop still sees the full
@@ -51,7 +63,13 @@ METAEDITOR_ENV_VARS: Tuple[str, ...] = ("METAEDITOR_PATH", "METAEDITOR", "MQL_ED
 MQL_SOURCE_EXTS: Tuple[str, ...] = (".mq5", ".mq4", ".mqh", ".mq")
 
 #: Compiled artifact extension per dialect.
-ARTIFACT_EXT: Dict[str, str] = {".mq5": ".ex5", ".mq4": ".ex4", ".mqh": ".ex5"}
+#:
+#: ``.mqh`` is deliberately absent: a header has no artifact of its own, so
+#: mapping it to ``.ex5`` made :func:`find_artifact` look for a file no build
+#: will ever write and made a clean header compile report the silent-failure
+#: note below. ``MQL_SOURCE_EXTS`` still lists it — a header is compilable, it
+#: just compiles to nothing.
+ARTIFACT_EXT: Dict[str, str] = {".mq5": ".ex5", ".mq4": ".ex4"}
 
 #: Default include directory name per dialect (relative to the data folder).
 INCLUDE_DIR_NAME: Dict[str, str] = {".mq5": "MQL5", ".mq4": "MQL4"}
@@ -498,6 +516,18 @@ def _await_summary(log_path: Path, timeout: float) -> str:
         time.sleep(_LOG_POLL_INTERVAL)
 
 
+def expects_artifact(source: str | Path) -> bool:
+    """True when a successful compile of ``source`` must leave a binary behind.
+
+    ``.mq5`` and ``.mq4`` do. ``.mqh`` and ``.mq`` do not: MetaEditor inlines a
+    header into whatever includes it and writes only that program's artifact, so
+    "no ``.ex5`` next to the source" is the normal outcome for one and evidence
+    of the CLI's silent failure for the other. Keeping the two apart is what
+    stops a clean header build from being reported as a broken ``.ex5`` build.
+    """
+    return Path(source).suffix.lower() in ARTIFACT_EXT
+
+
 def find_artifact(source: Path, since: Optional[float] = None) -> Optional[Path]:
     """Return the compiled artifact when it exists and post-dates the build.
 
@@ -663,10 +693,13 @@ def compile_source(
             "decides the build"
         )
 
-    if result.ok and not syntax_only and result.artifact is None:
-        # MetaEditor's CLI is known to fail silently on some large modular
-        # projects: 0 errors in the log, no .ex5 written. Surface it instead of
-        # reporting a clean build that produced nothing.
+    owed_an_artifact = expects_artifact(src)
+    if result.ok and not syntax_only and owed_an_artifact and result.artifact is None:
+        # MetaEditor's CLI is known to fail silently on large modular projects:
+        # 0 errors in the log, no .ex5 written, only the list of includes.
+        # Reported at mql5.com/en/forum/491543 and fixed in build 5200. Surface
+        # it instead of reporting a clean build that produced nothing — but only
+        # for a source that owes an artifact, or every header compile trips it.
         result.note = (
             "compiler reported 0 errors but no .ex5/.ex4 appeared next to the "
             "source — possible silent CLI failure or stale artifact"
@@ -726,6 +759,7 @@ __all__ = [
     "compile_source",
     "decode_compile_log",
     "default_log_path",
+    "expects_artifact",
     "extract_mql_source",
     "find_artifact",
     "find_metaeditor",

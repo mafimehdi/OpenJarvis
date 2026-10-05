@@ -26,10 +26,33 @@ MetaEditor builds — treat the pattern, not the exact text, as the key.
 | `'X' - not a class member` | Wrong CTrade/indicator method name | Check the class reference; `CTrade` has `PositionOpen`, `PositionClose`, `PositionModify`, `PositionClosePartial`, `OrderSend`, `Buy`, `Sell` |
 | `array out of range` (runtime) | Indexing a copied buffer before it has enough bars | Compare the count `CopyBuffer` returns with the count you asked for (`-1` is an error; fewer than requested means the data is not there yet) and check `BarsCalculated(handle) < 0`; on the first ticks the buffer really is short |
 
+### What a compile produces
+
+`.mq5` → `.ex5` beside it, `.mq4` → `.ex4`. A `.mqh` header produces **no
+artifact**: MetaEditor inlines it into whatever includes it, so editing a header
+changes nothing until the program that includes it is recompiled, and a header
+compiled on its own is a syntax check rather than a build.
+
+Do not read the process exit code as the verdict. A published log shows
+`metaeditor.exe` exiting `1` on a run whose own summary said
+`Result: 0 error(s), 0 warning(s)` (mql5.com/en/forum/157533); the summary line
+and the fresh artifact decide. The CLI can also report `0 errors, 0 warnings` and
+write no `.ex5` at all — a silent failure seen on large modular projects and
+fixed in build 5200 (mql5.com/en/forum/491543). The harness reports that case in
+its `note`; treat the note as a failed build, not a clean one.
+
 ## Trade retcodes (`ENUM_TRADE_RETCODE`)
 
 Printed by `trade.ResultRetcode()` after any CTrade call. Log
-`ResultRetcodeDescription()` too — but branch on the numeric code.
+`ResultRetcodeDescription()` too — but branch on the numeric code. Three codes
+mean *success*: `10008`, `10009` and `10010`. `mt5_order_send` returns a
+`success` flag so nothing has to remember which, and the bridge's `RETCODES`
+table holds the same labels as this one — a test pins the two against the MQL5
+reference's own table, because a correct number beside a wrong label still reads
+as a wrong answer to whoever trusts the label.
+
+Full list: mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes
+(there is no 10005 and no 10037).
 
 | Code | Meaning | What to do |
 |---|---|---|
@@ -37,7 +60,11 @@ Printed by `trade.ResultRetcode()` after any CTrade call. Log
 | 10010 | `DONE_PARTIAL` | Success, partial fill — re-check position volume |
 | 10004 | `REQUOTE` | Re-read prices and retry a bounded number of times |
 | 10006 | `REJECT` | Do not hammer; log and inspect SL/TP/volume validity |
-| 10008 | `CANCEL` | Usually a client-side timeout — check the connection |
+| 10008 | `PLACED` — a *pending* order was accepted | **Success.** The order is on the server; resending because the code was not `10009` places a second one |
+| 10007 | `CANCEL` — canceled by the trader | Withdrawn, not refused, and not a connection problem |
+| 10012 | `TIMEOUT` — canceled by timeout | The ambiguous one: the server may have taken the request anyway. Re-read positions and pending orders before any retry |
+| 10031 | `CONNECTION` | No connection with the trade server — *this* is the code that means "check the connection" |
+| 10036 | `POSITION_CLOSED` | The position you addressed is already gone: the "vanished mid-loop" case below, reported by the server |
 | 10014 | `INVALID_VOLUME` | Lot not on `SYMBOL_VOLUME_STEP` or outside MIN/MAX |
 | 10015 | `INVALID_PRICE` | Price not normalized to `SYMBOL_DIGITS`, or stale |
 | 10016 | `INVALID_STOPS` | SL/TP too close to market (< `SYMBOL_TRADE_STOPS_LEVEL`) or on the wrong side |

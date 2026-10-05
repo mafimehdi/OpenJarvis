@@ -168,16 +168,28 @@ SWAP_MODES: Dict[int, str] = {
     7: "reopen_current",
     8: "points_currency_symbol",
 }
+#: Trade server return codes, transcribed from the MQL5 reference's "Return
+#: Codes of the Trade Server" table
+#: (mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes). Each
+#: label is that page's constant name minus its ``TRADE_RETCODE_`` prefix, so the
+#: table can be diffed against the documentation line by line — and
+#: ``tests/examples/test_mt5_mcp_server.py`` pins exactly that, because three of
+#: these labels were wrong (10027 called a client-side autotrading block a
+#: timeout, 10030 called an invalid filling mode invalid stops, 10031 called a
+#: lost server connection a closed market) and nothing caught it: the numeric
+#: code beside each label was right, so a model reading only the number was fine
+#: and a model reading the advice was misled. The vendor's table has no 10005 and
+#: no 10037.
 RETCODES: Dict[int, str] = {
     10004: "requote",
-    10006: "rejected",
-    10007: "canceled",
+    10006: "reject",
+    10007: "cancel",
     10008: "placed",
     10009: "done",
     10010: "done_partial",
     10011: "error",
     10012: "timeout",
-    10013: "invalid_request",
+    10013: "invalid",
     10014: "invalid_volume",
     10015: "invalid_price",
     10016: "invalid_stops",
@@ -187,12 +199,37 @@ RETCODES: Dict[int, str] = {
     10020: "price_changed",
     10021: "price_off",
     10022: "invalid_expiration",
+    10023: "order_changed",
     10024: "too_many_requests",
     10025: "no_changes",
-    10027: "trade_timeout",
-    10030: "invalid_stops_prohibited",
-    10031: "market_closed_for_symbol",
+    10026: "server_disables_at",
+    10027: "client_disables_at",
+    10028: "locked",
+    10029: "frozen",
+    10030: "invalid_fill",
+    10031: "connection",
+    10032: "only_real",
+    10033: "limit_orders",
+    10034: "limit_volume",
+    10035: "invalid_order",
+    10036: "position_closed",
+    10038: "invalid_close_volume",
+    10039: "close_order_exist",
+    10040: "limit_positions",
+    10041: "reject_cancel",
+    10042: "long_only",
+    10043: "short_only",
+    10044: "close_only",
+    10045: "fifo_close",
+    10046: "hedge_prohibited",
 }
+
+#: The three codes that mean the request *succeeded*. ``PLACED`` is the one that
+#: gets misread: a pending order that was accepted reports 10008, not 10009, so
+#: treating "not DONE" as "did not happen" resends an order the server already
+#: has. ``success`` is returned beside the label so the caller never has to
+#: decide which codes are good.
+RETCODE_SUCCESS: frozenset = frozenset({10008, 10009, 10010})
 
 MAX_BARS = 2000
 MAX_SYMBOLS = 500
@@ -798,6 +835,7 @@ class MetaTraderTerminal(Terminal):
         return {
             "retcode": retcode,
             "retcode_message": RETCODES.get(retcode, f"unknown({retcode})"),
+            "success": retcode in RETCODE_SUCCESS,
             "deal": d.get("deal"),
             "order": d.get("order"),
             "volume": _f(d.get("volume")),
@@ -1319,6 +1357,7 @@ class StubTerminal(Terminal):
         return {
             "retcode": 10009,
             "retcode_message": RETCODES[10009],
+            "success": 10009 in RETCODE_SUCCESS,
             "deal": ticket,
             "order": ticket,
             "volume": float(request["volume"]),
@@ -1920,9 +1959,12 @@ def build_tools(
                     "multiple of the symbol's lot step and within its limits, "
                     "and prices are normalized to the tick size. A stop loss is "
                     "required unless the server was started with "
-                    "--no-require-stops. Returns the broker retcode with its "
-                    "meaning. Use it to verify an execution path, not to run a "
-                    "strategy — that is what the EA on the chart is for."
+                    "--no-require-stops. Returns the broker retcode, its meaning "
+                    "from MetaQuotes' own table, and a `success` flag: 10008 "
+                    "placed, 10009 done and 10010 partial are all successes, and "
+                    "a placed pending order is not a failure to resend. Use it to "
+                    "verify an execution path, not to run a strategy — that is "
+                    "what the EA on the chart is for."
                 ),
                 schema=_schema(
                     {

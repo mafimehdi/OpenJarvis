@@ -117,6 +117,7 @@ def _load(name: str) -> ModuleType:
 
 tester_report = _load("tester_report")
 mt5_mcp_server = _load("mt5_mcp_server")
+metaeditor = _load("metaeditor")
 
 
 # --------------------------------------------------------------------------
@@ -1237,3 +1238,106 @@ def test_the_criterion_table_says_what_build_2530_changed() -> None:
         "the note has to say the criteria now ignore the balance, or a reader "
         "still expects balance x metric in the Result column"
     )
+
+COMPILE_ERRORS = SKILL_DIR / "references" / "compile-errors.md"
+
+
+def _skill_retcodes() -> List[Tuple[int, str]]:
+    """``(code, CONSTANT)`` from the skill's trade-retcode table."""
+    text = COMPILE_ERRORS.read_text(encoding="utf-8")
+    start = text.index("## Trade retcodes")
+    stop = text.index("\n## ", start + 1)
+    return [
+        (int(code), name)
+        for code, name in re.findall(
+            r"^\| (\d{5}) \| `([A-Z_]+)`", text[start:stop], re.M
+        )
+    ]
+
+
+def test_the_skill_and_the_bridge_speak_one_retcode_vocabulary() -> None:
+    """Two readers of one table: a model reads the page, a caller reads the label
+    the bridge returns beside the number.
+
+    They are pinned to each other because the bridge's labels were wrong for
+    three codes while its numbers were right — 10027 called a client-side
+    autotrading block a timeout, 10030 called an invalid filling mode invalid
+    stops, 10031 called a lost connection a closed market — so anything that
+    checked only one side of the pair would have passed.
+    """
+    rows = _skill_retcodes()
+    assert rows, "the skill's retcode table did not parse"
+    for code, name in rows:
+        assert code in mt5_mcp_server.RETCODES, (
+            f"the skill lists {code}, which the bridge would report as unknown"
+        )
+        assert mt5_mcp_server.RETCODES[code] == name.lower(), (
+            f"the skill calls {code} {name}; the bridge calls it "
+            f"{mt5_mcp_server.RETCODES[code]}"
+        )
+
+
+def test_the_skill_lists_every_code_that_means_success() -> None:
+    """A page that names 10009 as the success path and stops there invites a
+    resend of every pending order that reported 10008 `PLACED`."""
+    rows = dict(_skill_retcodes())
+    for code in sorted(mt5_mcp_server.RETCODE_SUCCESS):
+        assert code in rows, f"{code} means success and the skill does not list it"
+
+
+def _compile_produces_section() -> str:
+    """The page's "What a compile produces" prose, flattened for matching.
+
+    The page wraps at ~78 columns and emphasises with ``**markers**``, so a
+    phrase can straddle a line break or sit inside one: raw substring checks
+    would fail on text that plainly says the thing.
+    """
+    text = COMPILE_ERRORS.read_text(encoding="utf-8")
+    start = text.index("### What a compile produces")
+    section = text[start:text.index("## Trade retcodes", start)]
+    return " ".join(section.replace("**", "").split())
+
+
+def test_the_skill_says_which_sources_leave_a_binary_behind() -> None:
+    """The page and ``ARTIFACT_EXT`` are two statements of one fact.
+
+    A header mapped to an artifact of its own made ``find_artifact`` look for a
+    ``.ex5`` no build writes, so a clean header compile carried the note
+    reserved for the CLI's real silent failure. Pinning the pair keeps the page
+    from promising an artifact the code does not look for, or the reverse.
+    """
+    section = _compile_produces_section()
+    for ext in metaeditor.ARTIFACT_EXT:
+        artifact = metaeditor.ARTIFACT_EXT[ext]
+        assert f"`{ext}`" in section and f"`{artifact}`" in section, (
+            f"the skill does not say {ext} compiles to {artifact}"
+        )
+    assert ".mqh" not in metaeditor.ARTIFACT_EXT
+    assert "no artifact" in section, (
+        "the skill must say a header produces no artifact of its own"
+    )
+
+
+def test_the_skill_points_at_the_header_recompile_rule() -> None:
+    """Editing a ``.mqh`` changes nothing until the including program rebuilds.
+
+    The compile-fix loop is exactly where that costs a round: the model edits a
+    header, sees the errors go away, and the terminal keeps running the old
+    binary.
+    """
+    assert "recompiled" in _compile_produces_section()
+
+
+def test_the_two_metaeditor_hedges_carry_their_evidence() -> None:
+    """Both claims are checkable, so both are cited rather than hedged.
+
+    "The exit code varies by build" and "some builds fail silently" read as
+    guesses; each has a public log or a vendor-fixed bug report behind it, and a
+    reader who doubts the behaviour can go and look.
+    """
+    source = (COMPANION / "metaeditor.py").read_text(encoding="utf-8")
+    section = _compile_produces_section()
+    for thread in ("157533", "491543"):
+        assert thread in source, f"metaeditor.py cites no evidence for {thread}"
+        assert thread in section, f"the skill cites no evidence for {thread}"
+    assert "build 5200" in source and "build 5200" in section

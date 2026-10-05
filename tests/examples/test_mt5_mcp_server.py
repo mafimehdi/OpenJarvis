@@ -384,6 +384,131 @@ class TestToolTable:
 # ---------------------------------------------------------------------------
 
 
+#: The MQL5 reference's "Return Codes of the Trade Server" table, copied here
+#: rather than read out of the bridge
+#: (mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes). Copying
+#: is the point: three of the bridge's labels were wrong — 10027 called a
+#: client-side autotrading block a timeout, 10030 called an invalid filling mode
+#: invalid stops, 10031 called a lost server connection a closed market — and no
+#: test that only read the bridge could have noticed, because the numeric code
+#: beside each label was correct. The vendor's table has no 10005 and no 10037.
+VENDOR_RETCODES: Dict[int, str] = {
+    10004: "requote",
+    10006: "reject",
+    10007: "cancel",
+    10008: "placed",
+    10009: "done",
+    10010: "done_partial",
+    10011: "error",
+    10012: "timeout",
+    10013: "invalid",
+    10014: "invalid_volume",
+    10015: "invalid_price",
+    10016: "invalid_stops",
+    10017: "trade_disabled",
+    10018: "market_closed",
+    10019: "no_money",
+    10020: "price_changed",
+    10021: "price_off",
+    10022: "invalid_expiration",
+    10023: "order_changed",
+    10024: "too_many_requests",
+    10025: "no_changes",
+    10026: "server_disables_at",
+    10027: "client_disables_at",
+    10028: "locked",
+    10029: "frozen",
+    10030: "invalid_fill",
+    10031: "connection",
+    10032: "only_real",
+    10033: "limit_orders",
+    10034: "limit_volume",
+    10035: "invalid_order",
+    10036: "position_closed",
+    10038: "invalid_close_volume",
+    10039: "close_order_exist",
+    10040: "limit_positions",
+    10041: "reject_cancel",
+    10042: "long_only",
+    10043: "short_only",
+    10044: "close_only",
+    10045: "fifo_close",
+    10046: "hedge_prohibited",
+}
+
+
+class TestRetcodeVocabulary:
+    """The labels a model reads next to a broker's retcode."""
+
+    def test_every_code_carries_the_name_the_reference_gives_it(
+        self, bridge: ModuleType
+    ) -> None:
+        assert bridge.RETCODES == VENDOR_RETCODES
+
+    def test_the_three_successes_are_the_three_the_reference_means(
+        self, bridge: ModuleType
+    ) -> None:
+        """10008 PLACED is a success: a pending order the server accepted.
+
+        Reading "not DONE" as "did not happen" resends an order that is already
+        on the server, which is why the flag exists beside the label.
+        """
+        assert bridge.RETCODE_SUCCESS == frozenset({10008, 10009, 10010})
+
+    def test_the_three_labels_that_were_wrong_are_now_their_own(
+        self, bridge: ModuleType
+    ) -> None:
+        assert bridge.RETCODES[10027] == "client_disables_at"
+        assert bridge.RETCODES[10030] == "invalid_fill"
+        assert bridge.RETCODES[10031] == "connection"
+        # and the codes those wrong labels belonged to are still where they were
+        assert bridge.RETCODES[10016] == "invalid_stops"
+        assert bridge.RETCODES[10018] == "market_closed"
+        assert bridge.RETCODES[10012] == "timeout"
+
+    def test_order_send_reports_success_beside_the_label(
+        self, bridge: ModuleType, stub: Any
+    ) -> None:
+        server = bridge.build_server(stub, allow_trading=True, require_stops=False)
+        out = _call(server, "mt5_order_send", symbol="EURUSD", side="buy", volume=0.1)
+        assert out["isError"] is False, out["text"]
+        result = json.loads(out["text"])["result"]
+        assert result["retcode"] == 10009
+        assert result["success"] is True
+
+    def test_the_success_flag_comes_from_the_table_not_the_call(
+        self, bridge: ModuleType
+    ) -> None:
+        """A code the table calls a success is a success whatever the request."""
+        for code in sorted(bridge.RETCODE_SUCCESS):
+            assert code in bridge.RETCODES, f"{code} is a success with no label"
+        for code in (10004, 10006, 10007, 10012, 10017, 10031, 10036):
+            assert code not in bridge.RETCODE_SUCCESS, f"{code} is not a success"
+
+    def test_the_vendor_binding_agrees_when_it_is_installed(
+        self, bridge: ModuleType
+    ) -> None:
+        """On a machine with MetaTrader5, check the table against the binding.
+
+        Skipped on Linux, where the package does not install — the copied table
+        above is what runs there.
+        """
+        mt5 = pytest.importorskip("MetaTrader5")
+        matched = 0
+        for code, label in bridge.RETCODES.items():
+            name = f"TRADE_RETCODE_{label.upper()}"
+            if not hasattr(mt5, name):
+                continue
+            assert getattr(mt5, name) == code, (
+                f"{name} is {getattr(mt5, name)} in the binding, not {code}"
+            )
+            matched += 1
+        assert matched >= 30, (
+            f"only {matched} of {len(bridge.RETCODES)} labels matched a binding "
+            "constant, so the naming has drifted from MetaQuotes'"
+        )
+
+
 class TestSafetyGates:
     def test_order_send_is_unknown_without_the_flag(self, server: Any) -> None:
         out = _call(server, "mt5_order_send", symbol="EURUSD", side="buy", volume=0.1)

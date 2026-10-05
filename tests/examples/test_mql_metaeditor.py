@@ -251,6 +251,78 @@ class TestArtifactDetection:
         assert me.find_artifact(src) is None
 
 
+class TestHeaderCompiles:
+    """A ``.mqh`` is compilable, and compiles to nothing.
+
+    MetaEditor inlines a header into whatever includes it and writes only that
+    program's ``.ex5``/``.ex4``. Mapping ``.mqh`` to an artifact of its own made
+    ``find_artifact`` look for a file no build will ever write, and made a clean
+    header compile carry the note reserved for the CLI's silent-failure bug
+    (mql5.com/en/forum/491543, fixed in build 5200).
+    """
+
+    def _compile(self, tmp_path: Path, monkeypatch, name: str) -> "me.CompileResult":
+        """Run a fake MetaEditor that logs a clean build for ``name``."""
+        editor = tmp_path / "metaeditor64.exe"
+        editor.write_text("x")
+        source = tmp_path / name
+        source.write_text("// syntax only")
+        log_path = me.default_log_path(source)
+
+        def run(cmd, **kwargs):
+            # The compiler writes the log, not the test: compile_source clears a
+            # stale one first and then waits for the summary to appear.
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_bytes("Result: 0 errors, 0 warnings".encode("utf-16"))
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        monkeypatch.setattr(me.subprocess, "run", run)
+        return me.compile_source(source, metaeditor=editor, wine=False)
+
+    def test_a_header_is_a_source_that_owes_no_artifact(self) -> None:
+        assert ".mqh" in me.MQL_SOURCE_EXTS, "a header is compilable"
+        assert ".mqh" not in me.ARTIFACT_EXT, "but it has no artifact of its own"
+        assert me.expects_artifact(Path("Include/MyLib.mqh")) is False
+        assert me.expects_artifact(Path("MyEA.mq5")) is True
+        assert me.expects_artifact(Path("MyEA.MQ4")) is True, "case-insensitive"
+
+    def test_nothing_is_looked_for_beside_a_header(self, tmp_path: Path) -> None:
+        header = tmp_path / "MyLib.mqh"
+        header.write_text("// constants")
+        assert me.find_artifact(header) is None
+        # A same-named .ex5 sitting there belongs to nothing: it is not what a
+        # header compiles into, and claiming it would be worse than claiming none.
+        (tmp_path / "MyLib.ex5").write_bytes(b"\x00")
+        assert me.find_artifact(header) is None
+
+    def test_a_clean_header_build_is_not_called_a_silent_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        result = self._compile(tmp_path, monkeypatch, "MyLib.mqh")
+        assert result.ok is True, result.error_text
+        assert result.artifact is None
+        assert "silent" not in result.note and ".ex5" not in result.note
+
+    def test_a_program_that_owed_an_ex5_still_gets_the_note(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The narrowing is not a blanket silence: the real bug still surfaces."""
+        result = self._compile(tmp_path, monkeypatch, "MyEA.mq5")
+        assert result.ok is True, result.error_text
+        assert result.artifact is None
+        assert "silent CLI failure" in result.note
+
+    def test_the_exit_code_is_not_what_decides_a_build(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A published log shows metaeditor.exe exiting 1 on a run whose own
+        summary read ``Result: 0 error(s), 0 warning(s)``
+        (mql5.com/en/forum/157533), so the fake above exits 1 on purpose."""
+        result = self._compile(tmp_path, monkeypatch, "MyEA.mq5")
+        assert result.exit_code == 1
+        assert result.ok is True, "the log decides, not the process"
+
+
 class TestFindMetaEditor:
     def test_env_var_is_honoured(self, tmp_path: Path, monkeypatch) -> None:
         fake = tmp_path / "metaeditor64.exe"
