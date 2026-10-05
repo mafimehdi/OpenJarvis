@@ -67,15 +67,31 @@ is the same sentence quoted above.
   1, 2 or 3.
 - `verify_on_terminal.py` — `DOCUMENTED_FORWARD_SHARE` holds the three shares and
   `_split_line` labels each observed split `matches` or `differs from` the documented
-  one, so the check compares instead of only collecting.
+  one, so the check compares instead of only collecting. Mode 4 is the value that
+  comparison cannot judge — there is no documented share to hold it against, and
+  `--modes` does not include it — so check 12 asks for a *date* instead.
 
 **How to check it on a machine.** `verify_on_terminal.py --yes --only 1` runs a single
 test per mode over a period whose midpoint is known and prints, for each mode, the dates
 each half actually reports beside the documented share.
 
+```bash
+python examples/mql_companion/verify_on_terminal.py --yes --only 12 --with-custom-split
+```
+
+Check 12 covers mode 4 and the two `ForwardDate` rules `tester_ini_warnings` ships. It
+computes the date to ask for from the range (`CUSTOM_FORWARD_SHARE` = 40% forward, which
+on the default range is 45 days from the 1/2 point, 31 from 1/3 and 68 from 1/4, so a
+build that ignored the date and fell back to a documented share could not look like one
+that honoured it), then runs three single tests: `ForwardMode=4` with that date,
+`ForwardMode=1` with the same date — the warning says other modes *ignore* it — and
+`ForwardMode=4` with no date at all. PASS means all three behaved as documented; FAIL
+names the claim that broke and the dates that broke it.
+
 **If a build disagrees.** The observed dates win for that build: paste the `mode=` lines
 into the pull request and keep both readings with the build that produced each. Nothing
-else moves, because no code depends on the integer beyond `4`.
+else moves, because no code depends on the integer beyond `4` — and what that `4` does
+is exactly what check 12 asks the terminal.
 
 **Still an assumption — empty cells versus zeros.** A `Forward Result` cell MT5 leaves
 empty parses as `None` and is excluded, so partial coverage is safe as written. But if a
@@ -258,8 +274,19 @@ the warning understates it.
 **Settled inside check 1**, which launches the terminal with `FromDate=2022-01-01` and
 prints the period the resulting report actually covers. The line reads one of two ways:
 `the terminal tested exactly that range` (soften the warning) or `the terminal tested
-from <date> instead` (the fallback is real). It needs `--yes`, like every launch, and
-it is the only check whose verdict can contradict a warning this repo already ships.
+from <date> instead` (the fallback is real). It needs `--yes`, like every launch.
+
+The `ForwardDate` half of the same assumption is **check 12**
+(`--only 12 --with-custom-split`), which asks for a custom split rather than a broken
+date: `ForwardMode=4` with a `ForwardDate` far from every documented share, the same
+date under `ForwardMode=1`, and `ForwardMode=4` with no date. Its verdict can contradict
+three warnings this repo already ships, which is the point of it — this note used to say
+check 1 was the only one that could, and check 11 and check 12 have since made that
+false.
+
+Still documentation-derived after both: the two out-of-range rules (a `ForwardDate` at or
+before `FromDate`, or at or after `ToDate`), and what a date MT5 cannot parse does to
+`ForwardDate` in particular, since check 1 probes `FromDate`.
 
 ---
 

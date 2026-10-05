@@ -665,6 +665,7 @@ python examples/mql_companion/verify_on_terminal.py --yes           # run it
 python examples/mql_companion/verify_on_terminal.py --yes --json verify.json
 python examples/mql_companion/verify_on_terminal.py --yes --with-model4 --with-grace
 python examples/mql_companion/verify_on_terminal.py --yes --with-forward-opt --set-file MyEA.set
+python examples/mql_companion/verify_on_terminal.py --yes --with-custom-split
 ```
 
 Nothing launches the terminal without `--yes`, and nothing in the script can
@@ -676,9 +677,12 @@ assumption, 1 when something did, and 2 when no terminal was found.
 
 The expensive checks are opt-in: `--with-model4` (a real-ticks run),
 `--with-grace` (the same run twice, to measure the race `process_grace` covers),
-`--with-stability` (a sampled write), `--with-optimization`, `--with-bridge` and
+`--with-stability` (a sampled write), `--with-optimization`, `--with-bridge`,
 `--with-forward-opt` (check 11: a two-stage optimization, the slowest run here,
-and the one that settles whether an un-rerun pass is left blank or written as 0).
+and the one that settles whether an un-rerun pass is left blank or written as 0)
+and `--with-custom-split` (check 12: three single tests that ask whether
+`ForwardMode=4` splits where `ForwardDate` says, whether other modes really
+ignore it, and what mode 4 does with no date at all).
 
 ## Extending
 

@@ -25,6 +25,7 @@ Usage (from the repository root)::
     python examples/mql_companion/verify_on_terminal.py --only 1,2,6 --yes
     python examples/mql_companion/verify_on_terminal.py --yes --with-model4
     python examples/mql_companion/verify_on_terminal.py --yes --with-forward-opt
+    python examples/mql_companion/verify_on_terminal.py --yes --with-custom-split
 
 Checks are numbered to match ``REVIEW-NOTES.md``. The ones that need a terminal
 are the point of the script; the ones that do not (environment, decode order,
@@ -45,7 +46,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -95,6 +96,12 @@ CHECKS: Tuple[Tuple[str, str, bool, str], ...] = (
         "Forward Result cell of a pass MT5 never re-ran (notes #1)",
         True,
         "--with-forward-opt",
+    ),
+    (
+        "12",
+        "Custom split: ForwardMode=4 and the two ForwardDate warnings (notes #1, #10)",
+        True,
+        "--with-custom-split",
     ),
 )
 
@@ -213,6 +220,37 @@ _SPLIT_TOLERANCE = 0.02
 #: contain passes the terminal never re-ran, which is what lets check 11 observe
 #: what their ``Forward Result`` cells hold instead of reasoning about it.
 DOCUMENTED_FORWARDED_SHARE: Dict[int, float] = {1: 0.10, 2: 0.25}
+
+
+#: The share of the period the forward half takes when check 12 asks for a
+#: custom split. It cannot be one MetaQuotes documents for modes 1-3 (1/2, 1/3,
+#: 1/4) or a terminal that ignored ``ForwardDate`` and fell back to a documented
+#: share would look like one that honoured it. 40% sits at least ten percentage
+#: points from all three — on the default 454-day range that is about 45 days,
+#: where a split lands within two of the date asked for.
+CUSTOM_FORWARD_SHARE = 0.40
+#: A split lands on a bar boundary, so the forward half can start a day or two
+#: off the date in the ini. Two days is far tighter than the gap above.
+_SPLIT_DAY_TOLERANCE = 2
+
+
+def _custom_split_date(from_date: str, to_date: str) -> str:
+    """The ``ForwardDate`` to ask for, as ``YYYY.MM.DD``, or "" if not computable.
+
+    Derived from the range rather than hardcoded: a date that is far from the
+    documented split points for one range can be the midpoint of another, and the
+    verdict would then depend on which range the user happened to pass.
+    """
+    try:
+        start = datetime.strptime(from_date.strip(), "%Y.%m.%d").date()
+        end = datetime.strptime(to_date.strip(), "%Y.%m.%d").date()
+    except ValueError:
+        return ""
+    total = (end - start).days
+    if total <= 0:
+        return ""
+    back_days = round(total * (1.0 - CUSTOM_FORWARD_SHARE))
+    return (start + timedelta(days=back_days)).strftime("%Y.%m.%d")
 
 
 def _split_line(mode: int, back: Any, forward: Any) -> str:
@@ -399,6 +437,7 @@ class Verifier:
         process_grace: float = 5.0,
         sampler: Optional[_SizeSampler] = None,
         from_date_override: str = "",
+        forward_date_override: str = "",
     ) -> Dict[str, Any]:
         """One run of the terminal. Never raises: a failure is evidence."""
         key = (
@@ -408,6 +447,7 @@ class Verifier:
             optimization,
             process_grace,
             from_date_override,
+            forward_date_override,
         )
         if key in self._cache:
             return self._cache[key]
@@ -422,6 +462,7 @@ class Verifier:
             optimization=optimization,
             expert_parameters=self.set_file,
             forward_mode=forward_mode,
+            forward_date=forward_date_override,
             report=str(target.with_suffix("")),
         )
         record: Dict[str, Any] = {
@@ -1074,6 +1115,173 @@ class Verifier:
             )
         return result
 
+    def _forward_start(self, record: Dict[str, Any]) -> Tuple[Optional[date], str]:
+        """Where one launch's forward half starts, or why it has none."""
+        if record["error"]:
+            return None, str(record["error"])
+        outcome = record["outcome"] or {}
+        if outcome.get("forward_report") is None:
+            note = str(outcome.get("forward_note", ""))[:120]
+            return None, ("no forward half. " + note).strip()
+        back_from, back_to = _span(outcome.get("report"))
+        fwd_from, fwd_to = _span(outcome.get("forward_report"))
+        if fwd_from is None:
+            return None, "the forward report carries no dates"
+        return fwd_from, f"back {back_from}..{back_to} | forward {fwd_from}..{fwd_to}"
+
+    def check_12_custom_split(self) -> Result:
+        """Does the terminal split where ``ForwardDate`` says it should?
+
+        ``tester_ini_warnings`` ships three claims about the custom split that are
+        read off MetaQuotes' config documentation and have never been observed:
+        that ``ForwardMode=4`` takes its date from ``ForwardDate``; that any other
+        mode *ignores* that date and splits 1/2, 1/3 or 1/4 instead; and that
+        ``ForwardMode=4`` with no ``ForwardDate`` leaves nothing saying where the
+        forward half starts. Check 1 asks for the three documented shares; this
+        one asks for a date, which is the mode check 1 cannot judge — `_split_line`
+        has no documented share to compare mode 4 against, and `--modes` does not
+        include it by default.
+
+        Not probed: the two out-of-range rules (a ``ForwardDate`` at or before
+        ``FromDate``, at or after ``ToDate``). Those stay documentation-derived.
+        """
+        result = Result("12", CHECKS[12][1])
+        started = time.monotonic()
+        requested = _custom_split_date(self.from_date, self.to_date)
+        if not requested:
+            result.status = UNKNOWN
+            result.note = (
+                f"FromDate={self.from_date} and ToDate={self.to_date} are not a "
+                "YYYY.MM.DD range this script can do arithmetic on, so no custom "
+                "split date could be chosen. The date has to sit far from the "
+                "documented 1/2, 1/3 and 1/4 points of whatever range is tested, "
+                "and picking one by hand would make the verdict depend on the "
+                "range rather than on the terminal."
+            )
+            return result
+        requested_day = datetime.strptime(requested, "%Y.%m.%d").date()
+        start = datetime.strptime(self.from_date.strip(), "%Y.%m.%d").date()
+        end = datetime.strptime(self.to_date.strip(), "%Y.%m.%d").date()
+        total = (end - start).days
+        midpoint = date.fromordinal(start.toordinal() + total // 2)
+        result.add(
+            f"range {self.from_date}..{self.to_date} ({total}d), asking for "
+            f"ForwardDate={requested}: the forward half takes "
+            f"{CUSTOM_FORWARD_SHARE:.0%}, so it is "
+            f"{abs((requested_day - midpoint).days)}d from the 1/2 point"
+        )
+        contradicted: List[str] = []
+
+        # A: the custom split itself.
+        fwd_from, detail = self._forward_start(
+            self.launch(forward_mode=4, tag="custom", forward_date_override=requested)
+        )
+        result.add(f"mode=4 with ForwardDate={requested}: {detail}")
+        measured = fwd_from is not None
+        if fwd_from is not None:
+            off = (fwd_from - requested_day).days
+            if abs(off) <= _SPLIT_DAY_TOLERANCE:
+                result.add(
+                    f"    the forward half starts {fwd_from}, {abs(off)}d from the "
+                    "date asked for: the custom split lands where the ini says"
+                )
+            else:
+                line = (
+                    f"    the forward half starts {fwd_from}, {off:+d}d from the "
+                    "date asked for"
+                )
+                if abs((fwd_from - midpoint).days) <= _SPLIT_DAY_TOLERANCE:
+                    # the most useful thing to know about a build that ignores the
+                    # date: which documented share it fell back to
+                    line += ", which is the documented 1/2 point of the range"
+                result.add(line)
+                contradicted.append(
+                    "ForwardMode=4 does not split at ForwardDate: the forward half "
+                    f"started {fwd_from} when the ini asked for {requested}"
+                )
+
+        # B: the same date with a mode that is documented to ignore it.
+        fwd_from, detail = self._forward_start(
+            self.launch(
+                forward_mode=1,
+                tag="customignored",
+                forward_date_override=requested,
+            )
+        )
+        result.add(f"mode=1 with ForwardDate={requested}: {detail}")
+        if fwd_from is not None and abs((fwd_from - requested_day).days) <= (
+            _SPLIT_DAY_TOLERANCE
+        ):
+            result.add(
+                f"    it starts {fwd_from}, the date asked for, under a mode the "
+                "documentation says ignores it"
+            )
+            contradicted.append(
+                f"ForwardDate is honoured with ForwardMode=1 (split at {fwd_from}), "
+                'so the warning that other modes "ignore it" is wrong and a run '
+                "can split where its ini says without ForwardMode=4"
+            )
+        elif fwd_from is not None:
+            off_mid = (fwd_from - midpoint).days
+            result.add(
+                f"    it starts {fwd_from}, {off_mid:+d}d from the documented 1/2 "
+                f"point and {abs((fwd_from - requested_day).days)}d from the date "
+                "asked for: the date was not used"
+            )
+
+        # C: mode 4 with nothing to take a date from.
+        fwd_from, detail = self._forward_start(
+            self.launch(forward_mode=4, tag="customnodate")
+        )
+        result.add(f"mode=4 with no ForwardDate: {detail}")
+        if fwd_from is not None:
+            off_mid = (fwd_from - midpoint).days
+            result.add(
+                f"    it still split, at {fwd_from} ({off_mid:+d}d from the 1/2 "
+                "point), so this build has a default the warning does not name"
+            )
+            contradicted.append(
+                f"ForwardMode=4 with no ForwardDate still splits, at {fwd_from}: "
+                'the warning says nothing "says where the forward half starts", '
+                "but this build picks a date on its own and the docs should name it"
+            )
+        result.add(
+            "not probed: the two out-of-range ForwardDate rules (at or before "
+            "FromDate, at or after ToDate) remain documentation-derived"
+        )
+
+        result.seconds = round(time.monotonic() - started, 2)
+        if contradicted:
+            result.status = FAIL
+            result.note = (
+                "Shipped claims contradicted: "
+                + "; ".join(contradicted)
+                + ". Fix tester_ini_warnings' wording, note 1 and note 10 in "
+                "REVIEW-NOTES.md and references/optimization.md, and keep the "
+                "observed dates: they are what this build does, and the docs "
+                "should carry both readings with the build that produced each."
+            )
+        elif not measured:
+            result.status = UNKNOWN
+            result.note = (
+                "No forward half from a single test with ForwardMode=4, so the "
+                "custom split could not be measured. Check 1 asks whether a single "
+                "test splits at all for modes 1-3: if it also reports no forward "
+                "half, forward splitting may be an optimizer-only feature and this "
+                "check needs --with-optimization --set-file <name>.set to run."
+            )
+        else:
+            result.status = PASS
+            result.note = (
+                "Confirmed on this build: ForwardMode=4 splits at the date its ini "
+                "asks for, a ForwardDate under ForwardMode=1 is not used, and "
+                "ForwardMode=4 with no ForwardDate splits nowhere. All three are "
+                "what tester_ini_warnings already tells the user, so note 1 and "
+                "note 10 can drop the inference for these rules — the two "
+                "out-of-range ones stay documented-only."
+            )
+        return result
+
     # -- driving ------------------------------------------------------------
 
     def run(
@@ -1092,6 +1300,7 @@ class Verifier:
             "9": self.check_9_optimization_extension,
             "10": self.check_10_bridge,
             "11": self.check_11_forward_cell,
+            "12": self.check_12_custom_split,
         }
         results: List[Result] = []
         for check_id, title, needs_terminal, flag in CHECKS:
@@ -1266,6 +1475,11 @@ def _id_list(raw: str) -> List[str]:
     "optimization, so it is the slowest check here.",
 )
 @click.option(
+    "--with-custom-split",
+    is_flag=True,
+    help="Opt in to the ForwardMode=4 probes (check 12): three single tests.",
+)
+@click.option(
     "--yes", is_flag=True, help="Actually launch the terminal. Without it: plan only."
 )
 @click.option(
@@ -1302,6 +1516,7 @@ def main(**options: Any) -> None:
         "--with-optimization": options["with_optimization"],
         "--with-bridge": options["with_bridge"],
         "--with-forward-opt": options["with_forward_opt"],
+        "--with-custom-split": options["with_custom_split"],
     }
     results = verifier.run(_id_list(options["only"]), _id_list(options["skip"]), opt_in)
     click.echo(render_report(results, verifier))

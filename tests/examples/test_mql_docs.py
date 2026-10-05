@@ -785,6 +785,26 @@ class TestDocumentedCommandsRun:
         assert "Forward Results tab" in note1, "the tie-breaker for a 0 cell"
         assert "treat 0 as missing" in note1
 
+    def test_review_notes_names_the_custom_split_run(self) -> None:
+        """Mode 4 is the one ForwardMode no documented share can judge.
+
+        Note 1 carries the mapping and note 10 the date rules; check 12 is what
+        observes both. The command, the share it asks for, the probe against the
+        mode documented to ignore ForwardDate, and what stays documentation-derived
+        all have to stay named, or the check drifts from the notes it settles.
+        """
+        notes = _flat((COMPANION / "REVIEW-NOTES.md").read_text(encoding="utf-8"))
+        note1 = notes[notes.index("## 1.") : notes.index("## 2.")]
+        assert "--only 12" in note1 and "--with-custom-split" in note1
+        assert "CUSTOM_FORWARD_SHARE" in note1, "the share that keeps it apart"
+        assert "ForwardMode=1" in note1, "the mode documented to ignore the date"
+        assert "45 days" in note1, "how far the requested date sits from the 1/2 point"
+        start = notes.index("## 10.")
+        note10 = notes[start : notes.index(" ## ", start + 1)]
+        assert "check 12" in note10, "the ForwardDate half of the same assumption"
+        assert "out-of-range" in note10, "and what neither check probes"
+        assert "probes FromDate" in note10, "check 1 does not probe ForwardDate"
+
     def test_skill_dry_run_writes_nothing(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         home.mkdir()

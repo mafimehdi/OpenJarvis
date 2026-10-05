@@ -68,6 +68,7 @@ echo "$@" >> "$FAKE_CALL_LOG"
 report=$(grep -m1 '^Report=' "$cfg" | cut -d= -f2-)
 from=$(grep -m1 '^FromDate=' "$cfg" | cut -d= -f2-)
 fmode=$(grep -m1 '^ForwardMode=' "$cfg" | cut -d= -f2-)
+fdate=$(grep -m1 '^ForwardDate=' "$cfg" | cut -d= -f2-)
 opt=$(grep -m1 '^Optimization=' "$cfg" | cut -d= -f2-)
 [ "${FAKE_MODE:-ok}" = "ignoreopt" ] && opt=0
 sleep "${FAKE_DELAY:-0}"
@@ -229,6 +230,27 @@ case "${FAKE_MODE:-ok}" in
       3) mid="2022.12.06"; fwd_from="2022.12.07";;
       *) mid="";;
     esac;;
+  custom)
+    # A terminal that follows the documented ForwardDate rules: mode 4 splits at
+    # the date it is given, any other mode ignores that date, and mode 4 with no
+    # date splits nowhere. FAKE_CUSTOM breaks exactly one of the three, so each
+    # FAIL branch of check 12 can be tested against a single claim.
+    case "${FAKE_CUSTOM:-}" in
+      ignore-date) if [ -n "$fdate" ]; then fdate="2022.08.16"; fi;;
+      honor-any-mode) if [ -n "$fdate" ]; then fmode=4; fi;;
+      default-split) if [ -z "$fdate" ]; then fdate="2022.08.16"; fi;;
+    esac
+    if [ "${fmode:-0}" = "4" ] && [ -n "$fdate" ]; then
+      fwd_from="$fdate"
+      mid=$(date -d "${fdate//./-} -1 day" +%Y.%m.%d)
+    else
+      case "${fmode:-0}" in
+        1) mid="2022.08.15"; fwd_from="2022.08.16";;
+        2) mid="2022.10.30"; fwd_from="2022.10.31";;
+        3) mid="2022.12.06"; fwd_from="2022.12.07";;
+        *) mid="";;
+      esac
+    fi;;
   *)
     # Arbitrary shares, on purpose: the split has to be derived from the dates
     # each half reports, not assumed from the mode.
@@ -271,6 +293,7 @@ def fake_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     monkeypatch.setenv("FAKE_CALL_LOG", str(tmp_path / "calls.log"))
     monkeypatch.delenv("FAKE_MODE", raising=False)
+    monkeypatch.delenv("FAKE_CUSTOM", raising=False)
     monkeypatch.delenv("FAKE_DELAY", raising=False)
     monkeypatch.delenv("FAKE_EXIT_DELAY", raising=False)
     return script
@@ -601,7 +624,13 @@ class TestLocalChecks:
 
 
 def _verifier_with_set(
-    fake_terminal: Path, tmp_path: Path, *, set_file: str = "MyEA.set", modes=(0, 1)
+    fake_terminal: Path,
+    tmp_path: Path,
+    *,
+    set_file: str = "MyEA.set",
+    modes=(0, 1),
+    from_date: str = "2022.01.01",
+    to_date: str = "2023.03.31",
 ) -> vt.Verifier:
     """A verifier that will really optimize: those checks need a .set to sweep."""
     return vt.Verifier(
@@ -609,8 +638,8 @@ def _verifier_with_set(
         expert="Examples/MACD/MACD Sample",
         symbol="EURUSD",
         period="H1",
-        from_date="2022.01.01",
-        to_date="2023.03.31",
+        from_date=from_date,
+        to_date=to_date,
         out_dir=tmp_path / f"reports-{set_file or 'noset'}",
         modes=list(modes),
         set_file=set_file,
@@ -709,6 +738,116 @@ class TestForwardCell:
         )
         assert result.exit_code == 0
         assert "opt-in: pass --with-forward-opt" in result.stdout
+
+
+class TestCustomSplit:
+    """Mode 4 and the two ForwardDate warnings: three claims, three probes."""
+
+    def test_the_custom_split_lands_where_the_ini_asks(
+        self, verifier: vt.Verifier, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "custom")
+        result = verifier.check_12_custom_split()
+        assert result.status == vt.PASS
+        evidence = "\n".join(result.evidence)
+        # the date asked for is 40% of the fixture range: 2022.09.30
+        assert "ForwardDate=2022.09.30" in evidence
+        assert "the custom split lands where the ini says" in evidence
+        assert "mode=1 with ForwardDate=2022.09.30" in evidence
+        assert "mode=4 with no ForwardDate" in evidence
+        assert verifier.launches == 3
+        assert "splits nowhere" in result.note
+
+    def test_the_date_it_asks_for_is_far_from_every_documented_share(self) -> None:
+        """A date that sits on a documented share could not tell the two apart.
+
+        2022.01.01..2023.03.31 is 454 days, so the documented shares start their
+        forward half on 2022.08.16 (1/2), 2022.10.31 (1/3) and 2022.12.07 (1/4).
+        """
+        assert vt.CUSTOM_FORWARD_SHARE == 0.40
+        assert vt._custom_split_date("2022.01.01", "2023.03.31") == "2022.09.30"
+        assert vt._custom_split_date("2022-01-01", "2023.03.31") == ""
+        assert vt._custom_split_date("2023.01.01", "2022.01.01") == ""
+
+    def test_a_range_it_cannot_do_arithmetic_on_launches_nothing(
+        self, fake_terminal: Path, tmp_path: Path
+    ) -> None:
+        verifier = _verifier_with_set(
+            fake_terminal, tmp_path, set_file="", from_date="2022-01-01"
+        )
+        result = verifier.check_12_custom_split()
+        assert result.status == vt.UNKNOWN
+        assert "YYYY.MM.DD" in result.note
+        assert verifier.launches == 0, "no date to ask for means nothing to launch"
+
+    def test_a_build_that_splits_somewhere_else_contradicts_mode_4(
+        self, verifier: vt.Verifier, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "custom")
+        monkeypatch.setenv("FAKE_CUSTOM", "ignore-date")
+        result = verifier.check_12_custom_split()
+        assert result.status == vt.FAIL
+        assert "ForwardMode=4 does not split at ForwardDate" in result.note
+        assert "2022.09.30" in result.note, "the note has to say what was asked for"
+        assert "tester_ini_warnings" in result.note, "and where the claim is shipped"
+
+    def test_a_build_that_honours_the_date_in_every_mode_contradicts_the_warning(
+        self, verifier: vt.Verifier, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "custom")
+        monkeypatch.setenv("FAKE_CUSTOM", "honor-any-mode")
+        result = verifier.check_12_custom_split()
+        assert result.status == vt.FAIL
+        assert "honoured with ForwardMode=1" in result.note
+        # one deviation, one contradicted claim: probe A still held
+        assert "does not split at ForwardDate" not in result.note
+
+    def test_a_build_with_a_default_split_has_to_have_it_named(
+        self, verifier: vt.Verifier, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "custom")
+        monkeypatch.setenv("FAKE_CUSTOM", "default-split")
+        result = verifier.check_12_custom_split()
+        assert result.status == vt.FAIL
+        assert "still splits" in result.note
+        assert "the docs should name it" in result.note
+        assert "does not split at ForwardDate" not in result.note
+
+    def test_no_forward_half_at_all_is_not_a_verdict(
+        self, verifier: vt.Verifier, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing measured must not read as the warnings being right."""
+        monkeypatch.setenv("FAKE_MODE", "backonly")
+        result = verifier.check_12_custom_split()
+        assert result.status == vt.UNKNOWN
+        assert "Check 1 asks whether a single test splits at all" in result.note
+
+    def test_the_rules_it_does_not_probe_are_said_to_be_unprobed(
+        self, verifier: vt.Verifier, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_MODE", "custom")
+        result = verifier.check_12_custom_split()
+        evidence = "\n".join(result.evidence)
+        assert "not probed: the two out-of-range ForwardDate rules" in evidence
+        assert "documentation-derived" in evidence
+
+    def test_the_check_is_registered_gated_and_listed(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = next(c for c in vt.CHECKS if c[0] == "12")
+        assert entry[2] is True and entry[3] == "--with-custom-split"
+        result = _run_cli(fake_terminal, tmp_path, monkeypatch, ["--list"])
+        assert result.exit_code == 0
+        assert "12" in result.stdout and "--with-custom-split" in result.stdout
+
+    def test_the_cli_skips_it_without_the_opt_in_flag(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = _run_cli(
+            fake_terminal, tmp_path, monkeypatch, ["--only", "12", "--yes"]
+        )
+        assert result.exit_code == 0
+        assert "opt-in: pass --with-custom-split" in result.stdout
 
 
 class TestReadOnlyGuard:
