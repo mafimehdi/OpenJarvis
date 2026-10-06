@@ -112,9 +112,12 @@ except Exception as exc:  # pragma: no cover - depends on what was deployed
 else:
     TESTER_IMPORT_ERROR = ""
 
-# ENUM_TIMEFRAMES values are minute counts. Using the raw integers keeps this
-# table portable: the real backend passes them straight to the MT5 API and the
-# stub backend uses them to size its bars.
+# Minutes per bar, which is what the stub sizes its bars with. These are NOT the
+# integers the MT5 API takes: in MQL5 only M1..M30 equal their minute count, and
+# PERIOD_H1 is 16385 (0x4001), D1 16408, W1 32769, MN1 49153
+# (mql5.com/en/book/applications/timeseries/timeseries_symbol_period). The real
+# backend therefore asks the package for its TIMEFRAME_* constant and falls back
+# on ``_timeframe_code`` rather than passing these through.
 TIMEFRAMES: Dict[str, int] = {
     "M1": 1,
     "M2": 2,
@@ -139,6 +142,29 @@ TIMEFRAMES: Dict[str, int] = {
     "MN1": 43200,
 }
 
+
+def _timeframe_code(timeframe: str) -> int:
+    """The ENUM_TIMEFRAMES integer for a name such as ``H4``.
+
+    The encoding the MQL5 book spells out: minutes below an hour are the count
+    itself, hours are ``0x4000 + n``, ``D1`` is ``0x4018`` and weeks and months
+    are ``0x8001`` and ``0xC001``.
+    """
+    key = str(timeframe or "").strip().upper()
+    if key not in TIMEFRAMES:
+        raise Mt5Error(
+            f"unknown timeframe {timeframe!r} — use one of: {', '.join(TIMEFRAMES)}"
+        )
+    if key == "D1":
+        return 0x4018
+    if key == "W1":
+        return 0x8001
+    if key == "MN1":
+        return 0xC001
+    count = int(key[1:])
+    return count if key[0] == "M" else 0x4000 + count
+
+
 TRADE_MODE_LABELS: Dict[int, str] = {0: "demo", 1: "contest", 2: "real"}
 ORDER_TYPE_LABELS: Dict[int, str] = {
     0: "buy",
@@ -150,23 +176,60 @@ ORDER_TYPE_LABELS: Dict[int, str] = {
     6: "buy_stop_limit",
     7: "sell_stop_limit",
 }
-FILLING_BITS: Dict[int, str] = {1: "fok", 2: "ioc", 4: "return"}
+#: SYMBOL_FILLING_MODE flags: FOK 1, IOC 2, BOC 4 ("Passive": book-or-cancel,
+#: limit orders only). ``Return`` has no flag at all — the page lists it with "No
+#: identifier" — because it is decided by the execution mode instead: allowed
+#: always, except under Market execution
+#: (mql5.com/en/docs/constants/environment_state/marketinfoconstants). Bit 4 was
+#: once read here as "return", which it never was.
+FILLING_BITS: Dict[int, str] = {1: "fok", 2: "ioc", 4: "boc"}
+#: ENUM_SYMBOL_TRADE_EXECUTION, in the order the reference lists it.
+EXECUTION_MODES: Dict[int, str] = {
+    0: "request",
+    1: "instant",
+    2: "market",
+    3: "exchange",
+}
 EXPIRATION_BITS: Dict[int, str] = {
     1: "gtc",
     2: "day",
     4: "specified",
     8: "specified_day",
 }
+#: ENUM_SYMBOL_SWAP_MODE, named by the reference's identifiers minus the
+#: ``SYMBOL_SWAP_MODE_`` prefix. The reference's table carries no numbers; the
+#: ones that a source states outright are DISABLED 0, POINTS 1, CURRENCY_SYMBOL
+#: 2, CURRENCY_MARGIN 3 and INTEREST_OPEN 6 (the DoEasy library, mql5.com/en/
+#: articles/7014, which also gives MQL4's numbering beside them). The rest follow
+#: the declaration order, and CURRENCY_PROFIT is the identifier build 4540
+#: appended, so 9 — the one value here no source writes as a number. Before this
+#: table 3 was "percent", 5 "points_sl_tp" and 8 "points_currency_symbol", none
+#: of which MQL5 has.
 SWAP_MODES: Dict[int, str] = {
     0: "disabled",
     1: "points",
     2: "currency_symbol",
-    3: "percent",
-    4: "currency_margin",
-    5: "points_sl_tp",
-    6: "reopen_bid",
+    3: "currency_margin",
+    4: "currency_deposit",
+    5: "interest_current",
+    6: "interest_open",
     7: "reopen_current",
-    8: "points_currency_symbol",
+    8: "reopen_bid",
+    9: "currency_profit",
+}
+#: What SYMBOL_SWAP_LONG and SYMBOL_SWAP_SHORT are measured in under each mode —
+#: the reference says the mode "determines the units of measure" of both.
+SWAP_UNITS: Dict[str, str] = {
+    "disabled": "no swap",
+    "points": "points",
+    "currency_symbol": "base currency of the symbol",
+    "currency_margin": "margin currency of the symbol",
+    "currency_deposit": "deposit currency",
+    "currency_profit": "profit currency",
+    "interest_current": "annual % of the current price (360-day year)",
+    "interest_open": "annual % of the position's open price (360-day year)",
+    "reopen_current": "points; position reopened at the previous close",
+    "reopen_bid": "points; position reopened at the new day's Bid",
 }
 #: Trade server return codes, transcribed from the MQL5 reference's "Return
 #: Codes of the Trade Server" table
@@ -304,6 +367,39 @@ def _decode_bits(value: Any, bits: Dict[int, str]) -> List[str]:
     return [name for bit, name in bits.items() if mask & bit]
 
 
+def _group_matches(name: str, group: str) -> bool:
+    """``symbols_get(group=...)`` as the Python reference describes it.
+
+    ``*`` is honoured at the beginning and the end of a condition only, so
+    ``EUR*`` is a prefix, ``*XAU*`` a substring and a bare ``XAU`` is that exact
+    name — it does not match ``XAUUSD``. Conditions are comma separated and
+    applied in order, a leading ``!`` removing what earlier ones selected
+    (mql5.com/en/docs/python_metatrader5/mt5symbolsget_py). The reference does
+    not say whether matching is case sensitive, so this is not either.
+    """
+    conditions = [part.strip() for part in str(group or "").split(",") if part.strip()]
+    if not conditions:
+        return True
+    wanted = name.upper()
+    selected = False
+    for condition in conditions:
+        negate = condition.startswith("!")
+        mask = (condition[1:] if negate else condition).strip().upper()
+        head, tail = mask.startswith("*"), mask.endswith("*")
+        core = mask.strip("*")
+        if head and tail:
+            hit = core in wanted
+        elif head:
+            hit = wanted.endswith(core)
+        elif tail:
+            hit = wanted.startswith(core)
+        else:
+            hit = wanted == core
+        if hit:
+            selected = not negate
+    return selected
+
+
 def _timeframe_minutes(timeframe: str) -> int:
     key = str(timeframe or "").strip().upper()
     if key not in TIMEFRAMES:
@@ -398,18 +494,48 @@ class Terminal(ABC):
         """Release the terminal connection (best effort)."""
 
 
-# SYMBOL_ORDER_MODE bits — which order types a broker accepts on a symbol.
-_ORDER_MODE_BITS: Dict[int, str] = {
-    1: "buy",
-    2: "sell",
-    4: "buy_limit",
-    8: "sell_limit",
-    16: "buy_stop",
-    32: "sell_stop",
-    64: "buy_stop_limit",
-    128: "sell_stop_limit",
-    256: "close_by",
+# SYMBOL_ORDER_MODE flags (mql5.com/en/docs/constants/environment_state/
+# marketinfoconstants): one flag per *family* of order types, plus whether a
+# stop loss or take profit may be attached. Each family stands for a buy and a
+# sell. This table used to hold one bit per ORDER_TYPE (1 buy, 2 sell, 4
+# buy_limit, ...), which is a different numbering: a market-only symbol
+# (SYMBOL_ORDER_MARKET = 1) decoded as "buy" alone.
+_ORDER_MODE_FLAGS: Dict[int, str] = {
+    1: "market",
+    2: "limit",
+    4: "stop",
+    8: "stop_limit",
+    16: "sl",
+    32: "tp",
+    64: "close_by",
 }
+_ORDER_TYPES_BY_FLAG: Dict[int, Tuple[str, ...]] = {
+    1: ("buy", "sell"),
+    2: ("buy_limit", "sell_limit"),
+    4: ("buy_stop", "sell_stop"),
+    8: ("buy_stop_limit", "sell_stop_limit"),
+    64: ("close_by",),
+}
+
+
+def _order_types(mask: Any) -> List[str]:
+    """The order types a SYMBOL_ORDER_MODE mask allows."""
+    try:
+        value = int(mask or 0)
+    except (TypeError, ValueError):
+        return []
+    out: List[str] = []
+    for flag, names in _ORDER_TYPES_BY_FLAG.items():
+        if value & flag:
+            out.extend(names)
+    return out
+
+
+def _mode_flag(mask: Any, flag: int) -> bool:
+    try:
+        return bool(int(mask or 0) & flag)
+    except (TypeError, ValueError):
+        return False
 
 
 class MetaTraderTerminal(Terminal):
@@ -608,6 +734,12 @@ class MetaTraderTerminal(Terminal):
             self._fail(f"symbol_info({symbol!r})")
         d = _as_dict(info)
         out = self._symbol_row(mt5, d)
+        raw_execution = d.get("trade_exemode")
+        execution = (
+            EXECUTION_MODES.get(int(_f(raw_execution, -1)))
+            if raw_execution is not None
+            else None
+        )
         out.update(
             {
                 "synthetic": False,
@@ -618,6 +750,9 @@ class MetaTraderTerminal(Terminal):
                 "swap_mode": SWAP_MODES.get(
                     int(_f(d.get("swap_mode"), -1)), str(d.get("swap_mode"))
                 ),
+                "swap_unit": SWAP_UNITS.get(
+                    SWAP_MODES.get(int(_f(d.get("swap_mode"), -1)), ""), "unknown"
+                ),
                 "swap_long": _f(d.get("swap_long")),
                 "swap_short": _f(d.get("swap_short")),
                 "margin_currency": d.get("currency_margin"),
@@ -625,8 +760,16 @@ class MetaTraderTerminal(Terminal):
                 "margin_hedged": _f(d.get("margin_hedged")),
                 "session_buy_from": d.get("session_buy_from"),
                 "session_buy_to": d.get("session_buy_to"),
-                "order_types": _decode_bits(d.get("order_mode"), _ORDER_MODE_BITS),
+                "order_types": _order_types(d.get("order_mode")),
+                "sl_allowed": _mode_flag(d.get("order_mode"), 16),
+                "tp_allowed": _mode_flag(d.get("order_mode"), 32),
                 "order_mode_raw": d.get("order_mode"),
+                "execution_mode": execution,
+                # Return is not a flag in filling_mode: it is allowed under every
+                # execution mode except Market (None when the mode is unknown).
+                "return_fill_allowed": (
+                    None if execution is None else execution != "market"
+                ),
                 "digits_raw": d.get("digits"),
             }
         )
@@ -670,8 +813,12 @@ class MetaTraderTerminal(Terminal):
         self, symbol: str, timeframe: str, count: int, shift: int
     ) -> List[Dict[str, Any]]:
         mt5 = self._ensure()
-        minutes = _timeframe_minutes(timeframe)
-        bars = mt5.copy_rates_from_pos(symbol, minutes, int(shift), int(count))
+        _timeframe_minutes(timeframe)  # validates the name
+        key = str(timeframe).strip().upper()
+        code = getattr(mt5, f"TIMEFRAME_{key}", None)
+        if not isinstance(code, int):
+            code = _timeframe_code(key)
+        bars = mt5.copy_rates_from_pos(symbol, code, int(shift), int(count))
         if bars is None or len(bars) == 0:
             self._fail(
                 f"copy_rates_from_pos({symbol!r}, {timeframe}) — no history "
@@ -1176,10 +1323,9 @@ class StubTerminal(Terminal):
     def symbols(
         self, pattern: str, visible_only: bool, limit: int
     ) -> List[Dict[str, Any]]:
-        needle = (pattern or "").upper().replace("*", "")
         out = []
         for spec in _STUB_SYMBOLS:
-            if needle and needle not in spec.name:
+            if not _group_matches(spec.name, pattern):
                 continue
             out.append(self._symbol_row(spec))
             if len(out) >= limit:
@@ -1214,9 +1360,12 @@ class StubTerminal(Terminal):
         row = self._symbol_row(self._sym(symbol))
         row.update(
             {
-                "filling_modes": ["ioc", "return"],
+                "filling_modes": ["fok", "ioc"],
+                "execution_mode": "instant",
+                "return_fill_allowed": True,
                 "expiration_modes": ["gtc", "day", "specified"],
                 "swap_mode": "points",
+                "swap_unit": SWAP_UNITS["points"],
                 "swap_long": -1.2,
                 "swap_short": -0.8,
                 "margin_currency": "USD",
@@ -1224,14 +1373,9 @@ class StubTerminal(Terminal):
                 "margin_hedged": 0.0,
                 "session_buy_from": 0,
                 "session_buy_to": 86_399,
-                "order_types": [
-                    "buy",
-                    "sell",
-                    "buy_limit",
-                    "sell_limit",
-                    "buy_stop",
-                    "sell_stop",
-                ],
+                "order_types": _order_types(63),
+                "sl_allowed": True,
+                "tp_allowed": True,
                 "order_mode_raw": 63,
                 "digits_raw": row["digits"],
             }
@@ -1603,6 +1747,47 @@ def _check_price_is_tradable(
         )
 
 
+def _resolve_filling(
+    requested: Optional[str], info: Dict[str, Any], symbol: str
+) -> str:
+    """Pick the filling policy a market order on this symbol can use.
+
+    FOK and IOC are flags in SYMBOL_FILLING_MODE, which only Market and
+    Exchange execution consult (Request and Instant accept both whatever the
+    flags say); RETURN is allowed under every execution mode except Market.
+    A policy the symbol does not allow comes back
+    from the server as retcode 10030, so it is refused here with the allowed
+    set named. With none requested IOC wins, then FOK, then RETURN. When
+    ``info`` carries no filling data at all the old IOC default stands.
+    """
+    flags = info.get("filling_modes")
+    return_ok = info.get("return_fill_allowed")
+    if flags is None and return_ok is None:
+        return str(requested or "ioc")
+    free = info.get("execution_mode") in ("request", "instant")
+    usable = [mode for mode in ("ioc", "fok") if free or mode in (flags or [])]
+    if return_ok:
+        usable.append("return")
+    allowed = ", ".join(usable) or "none"
+    if requested:
+        want = str(requested).lower()
+        if want not in usable and not (want == "return" and return_ok is None):
+            raise Mt5Error(
+                f"{symbol}: filling {want!r} is not allowed for this symbol "
+                f"(execution {info.get('execution_mode') or 'unknown'}, "
+                f"allowed for a market order: {allowed}). Omit filling to "
+                "have the bridge choose."
+            )
+        return want
+    if not usable:
+        raise Mt5Error(
+            f"{symbol}: no filling policy is usable for a market order "
+            f"(flags {flags}, execution {info.get('execution_mode')}). Read "
+            "mt5_symbol_info; this symbol may not accept market orders here."
+        )
+    return usable[0]
+
+
 def _check_stops(
     side: str,
     entry: float,
@@ -1802,7 +1987,7 @@ def build_tools(
             "magic": int(magic or 0),
             "comment": str(comment or "")[:31],
             "deviation": deviation_points,
-            "filling": filling,
+            "filling": _resolve_filling(filling, info, str(symbol)),
         }
         result = terminal.order_send(request)
         return {
@@ -1848,12 +2033,16 @@ def build_tools(
                 "List symbols in the market watch with the fields an EA needs: "
                 "digits, point, bid/ask, spread in points, volume "
                 "min/max/step, stops level, contract size, tick size and tick "
-                "value. Filter with a pattern like 'EUR*'."
+                "value. Filter with a pattern like 'EUR*' or '*XAU*'."
             ),
             schema=_schema(
                 {
                     "pattern": _s(
-                        "Glob-ish filter, e.g. 'EUR*' or 'XAU'. Empty = all."
+                        "Name filter as MT5's symbols_get(group=) reads it: '*' "
+                        "only at the start or end of a condition ('EUR*' prefix, "
+                        "'*XAU*' contains), several conditions separated by "
+                        "commas, '!' excludes ('*,!*USD*'). A bare 'XAU' matches "
+                        "only a symbol named exactly XAU. Empty = all."
                     ),
                     "visible_only": _bool(
                         "Only symbols shown in the market watch (default true)."
@@ -1873,9 +2062,11 @@ def build_tools(
             description=(
                 "Full contract specification for one symbol: digits, point, "
                 "spread, volume limits and step, stops and freeze level, "
-                "contract size, tick size/value, supported filling modes, "
-                "expiration modes, swap mode, margin and profit currencies, "
-                "and which order types the broker accepts. Read this before "
+                "contract size, tick size/value, filling flags (fok/ioc/boc) with "
+                "the execution mode and whether RETURN is usable, expiration "
+                "modes, swap mode and its unit, margin and profit currencies, "
+                "which order types the broker accepts and whether SL/TP may "
+                "be attached. Read this before "
                 "writing order or lot-sizing code."
             ),
             schema=_schema({"symbol": _s("Symbol name, e.g. 'EURUSD'.")}, ["symbol"]),
@@ -2003,7 +2194,10 @@ def build_tools(
                         "deviation": _int("Maximum slippage in points (default 10)."),
                         "filling": _enum(
                             ["ioc", "fok", "return"],
-                            "Filling policy; defaults to IOC.",
+                            "Filling policy. Default: IOC if the symbol allows it, "
+                            "else FOK, else RETURN (which Market execution "
+                            "forbids). One the symbol does not allow is refused "
+                            "before sending; see mt5_symbol_info.",
                         ),
                     },
                     ["symbol", "side", "volume"] + (["sl"] if require_stops else []),

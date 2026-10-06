@@ -191,10 +191,11 @@ class TestStubMarket:
         assert all(o["synthetic"] is True for o in stub.orders(None))
 
     def test_symbol_filtering_by_pattern_and_magic(self, stub: Any) -> None:
+        # "*" leads a suffix match, as in MT5's symbols_get(group=): USDJPY
+        # does not end in USD and is not in the answer.
         assert [s["symbol"] for s in stub.symbols("*USD", True, 10)] == [
             "EURUSD",
             "GBPUSD",
-            "USDJPY",
             "XAUUSD",
             "BTCUSD",
         ]
@@ -2159,3 +2160,345 @@ class TestReadersRefuseAnOptimizationTable:
     ) -> None:
         payload = _payload(server, "mt5_tester_report", path=str(tester_report))
         assert payload["metrics"]["profit_factor"] == 1.38
+
+
+# ---------------------------------------------------------------------------
+# The real backend against the vendor's constants (a fake MetaTrader5 module)
+# ---------------------------------------------------------------------------
+
+#: ENUM_TIMEFRAMES as MQL5 defines them (mql5.com/en/book/applications/
+#: timeseries/timeseries_symbol_period). Only M1..M30 equal their minute count.
+VENDOR_TIMEFRAMES = {
+    "M1": 1,
+    "M2": 2,
+    "M3": 3,
+    "M4": 4,
+    "M5": 5,
+    "M6": 6,
+    "M10": 10,
+    "M12": 12,
+    "M15": 15,
+    "M20": 20,
+    "M30": 30,
+    "H1": 16385,
+    "H2": 16386,
+    "H3": 16387,
+    "H4": 16388,
+    "H6": 16390,
+    "H8": 16392,
+    "H12": 16396,
+    "D1": 16408,
+    "W1": 32769,
+    "MN1": 49153,
+}
+
+
+class _FakeMt5:
+    """Just enough of the ``MetaTrader5`` package, with its real constant values."""
+
+    TRADE_ACTION_DEAL = 1
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    ORDER_TIME_GTC = 0
+    ORDER_FILLING_FOK = 0
+    ORDER_FILLING_IOC = 1
+    ORDER_FILLING_RETURN = 2
+
+    def __init__(self, *, constants: bool = True, **symbol: Any) -> None:
+        if constants:
+            for name, code in VENDOR_TIMEFRAMES.items():
+                setattr(self, f"TIMEFRAME_{name}", code)
+        self.symbol = {
+            "name": "EURUSD",
+            "description": "Euro vs US Dollar",
+            "digits": 5,
+            "point": 0.00001,
+            "visible": True,
+            "volume_min": 0.01,
+            "volume_max": 100.0,
+            "volume_step": 0.01,
+            "trade_stops_level": 0,
+            "trade_freeze_level": 0,
+            "trade_contract_size": 100000.0,
+            "trade_tick_size": 0.00001,
+            "trade_tick_value": 1.0,
+            "trade_exemode": 1,
+            "filling_mode": 3,
+            "expiration_mode": 15,
+            "swap_mode": 1,
+            "order_mode": 63,
+        }
+        self.symbol.update(symbol)
+        self.calls: Dict[str, Any] = {}
+
+    def last_error(self) -> Tuple[int, str]:
+        return (1, "Success")
+
+    def symbols_get(self, group: str = "*") -> List[Dict[str, Any]]:
+        self.calls["symbols_get"] = group
+        return [self.symbol]
+
+    def symbol_info(self, name: str) -> Dict[str, Any]:
+        return self.symbol
+
+    def symbol_info_tick(self, name: str) -> Dict[str, Any]:
+        return {"time": 1_790_000_000, "bid": 1.1, "ask": 1.1001, "last": 0.0}
+
+    def account_info(self) -> Dict[str, Any]:
+        return {"login": 7, "trade_mode": 0, "balance": 1000.0}
+
+    def copy_rates_from_pos(
+        self, name: str, timeframe: int, start: int, count: int
+    ) -> List[Dict[str, Any]]:
+        self.calls["rates"] = (name, timeframe, start, count)
+        bar = {
+            "time": 1_790_000_000,
+            "open": 1.1,
+            "high": 1.2,
+            "low": 1.0,
+            "close": 1.15,
+            "tick_volume": 10,
+            "spread": 2,
+        }
+        return [bar]
+
+    def order_send(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        self.calls["order_send"] = request
+        return {"retcode": 10009, "deal": 1, "order": 2, "volume": request["volume"]}
+
+
+def _real(bridge: ModuleType, **kwargs: Any) -> Tuple[Any, _FakeMt5]:
+    fake = _FakeMt5(**kwargs)
+    terminal = bridge.MetaTraderTerminal()
+    terminal._mt5 = fake
+    terminal._connected = True
+    return terminal, fake
+
+
+class TestTimeframeCodes:
+    def test_the_fixture_lists_every_bridge_timeframe(self, bridge: ModuleType) -> None:
+        assert set(bridge.TIMEFRAMES) == set(VENDOR_TIMEFRAMES)
+
+    @pytest.mark.parametrize("name,code", sorted(VENDOR_TIMEFRAMES.items()))
+    def test_rates_pass_the_enum_value_not_minutes(
+        self, bridge: ModuleType, name: str, code: int
+    ) -> None:
+        terminal, fake = _real(bridge)
+        terminal.rates("EURUSD", name, 1, 0)
+        assert fake.calls["rates"] == ("EURUSD", code, 0, 1)
+
+    @pytest.mark.parametrize("name,code", sorted(VENDOR_TIMEFRAMES.items()))
+    def test_the_fallback_encoder_agrees_with_the_vendor(
+        self, bridge: ModuleType, name: str, code: int
+    ) -> None:
+        assert bridge._timeframe_code(name) == code
+        terminal, fake = _real(bridge, constants=False)
+        terminal.rates("EURUSD", name, 1, 0)
+        assert fake.calls["rates"][1] == code
+
+    def test_the_name_is_case_insensitive(self, bridge: ModuleType) -> None:
+        terminal, fake = _real(bridge)
+        terminal.rates("EURUSD", "h4", 1, 0)
+        assert fake.calls["rates"][1] == 16388
+
+    def test_an_unknown_timeframe_is_named(self, bridge: ModuleType) -> None:
+        terminal, _ = _real(bridge)
+        with pytest.raises(bridge.Mt5Error, match="H7"):
+            terminal.rates("EURUSD", "H7", 1, 0)
+
+
+class TestSymbolInfoFlags:
+    @pytest.mark.parametrize(
+        "mask,types,sl,tp",
+        [
+            (1, ["buy", "sell"], False, False),
+            (2, ["buy_limit", "sell_limit"], False, False),
+            (4, ["buy_stop", "sell_stop"], False, False),
+            (8, ["buy_stop_limit", "sell_stop_limit"], False, False),
+            (16 | 1, ["buy", "sell"], True, False),
+            (32 | 1, ["buy", "sell"], False, True),
+            (64, ["close_by"], False, False),
+            (0, [], False, False),
+        ],
+    )
+    def test_order_mode_is_a_set_of_families(
+        self, bridge: ModuleType, mask: int, types: List[str], sl: bool, tp: bool
+    ) -> None:
+        terminal, _ = _real(bridge, order_mode=mask)
+        info = terminal.symbol_info("EURUSD")
+        assert info["order_types"] == types
+        assert (info["sl_allowed"], info["tp_allowed"]) == (sl, tp)
+        assert info["order_mode_raw"] == mask
+
+    def test_a_market_only_symbol_can_still_sell(self, bridge: ModuleType) -> None:
+        terminal, _ = _real(bridge, order_mode=1)
+        types = terminal.symbol_info("EURUSD")["order_types"]
+        assert "buy" in types and "sell" in types
+
+    @pytest.mark.parametrize(
+        "mask,flags",
+        [(1, ["fok"]), (2, ["ioc"]), (3, ["fok", "ioc"]), (4, ["boc"]), (0, [])],
+    )
+    def test_filling_flags_are_fok_ioc_boc(
+        self, bridge: ModuleType, mask: int, flags: List[str]
+    ) -> None:
+        terminal, _ = _real(bridge, filling_mode=mask)
+        info = terminal.symbol_info("EURUSD")
+        assert info["filling_modes"] == flags
+        assert "return" not in info["filling_modes"]
+
+    @pytest.mark.parametrize(
+        "raw,name,usable",
+        [(0, "request", True), (1, "instant", True), (2, "market", False)]
+        + [(3, "exchange", True)],
+    )
+    def test_return_is_allowed_unless_execution_is_market(
+        self, bridge: ModuleType, raw: int, name: str, usable: bool
+    ) -> None:
+        terminal, _ = _real(bridge, trade_exemode=raw)
+        info = terminal.symbol_info("EURUSD")
+        assert info["execution_mode"] == name
+        assert info["return_fill_allowed"] is usable
+
+    @pytest.mark.parametrize(
+        "raw,name",
+        [
+            (0, "disabled"),
+            (1, "points"),
+            (2, "currency_symbol"),
+            (3, "currency_margin"),
+            (4, "currency_deposit"),
+            (5, "interest_current"),
+            (6, "interest_open"),
+            (7, "reopen_current"),
+            (8, "reopen_bid"),
+            (9, "currency_profit"),
+        ],
+    )
+    def test_swap_modes_use_the_mql5_identifiers(
+        self, bridge: ModuleType, raw: int, name: str
+    ) -> None:
+        terminal, _ = _real(bridge, swap_mode=raw)
+        info = terminal.symbol_info("EURUSD")
+        assert info["swap_mode"] == name
+        assert info["swap_unit"] and info["swap_unit"] != "unknown"
+
+    def test_the_identifiers_the_old_table_invented_are_gone(
+        self, bridge: ModuleType
+    ) -> None:
+        names = set(bridge.SWAP_MODES.values())
+        assert not names & {"percent", "points_sl_tp", "points_currency_symbol"}
+
+    def test_an_unknown_swap_mode_is_passed_through(self, bridge: ModuleType) -> None:
+        terminal, _ = _real(bridge, swap_mode=42)
+        info = terminal.symbol_info("EURUSD")
+        assert info["swap_mode"] == "42"
+        assert info["swap_unit"] == "unknown"
+
+    def test_expiration_flags_follow_the_vendor(self, bridge: ModuleType) -> None:
+        terminal, _ = _real(bridge, expiration_mode=15)
+        modes = terminal.symbol_info("EURUSD")["expiration_modes"]
+        assert modes == ["gtc", "day", "specified", "specified_day"]
+
+
+class TestSymbolGroups:
+    @pytest.mark.parametrize(
+        "group,expected",
+        [
+            ("EURUSD", True),
+            ("EUR", False),
+            ("XAU", False),
+            ("EUR*", True),
+            ("*USD", True),
+            ("*UR*", True),
+            ("*XAU*", False),
+            ("GBP*,EUR*", True),
+            ("*,!*USD", False),
+            ("*,!*JPY", True),
+            ("!EUR*,*", True),
+            ("", True),
+        ],
+    )
+    def test_matching_follows_the_python_reference(
+        self, bridge: ModuleType, group: str, expected: bool
+    ) -> None:
+        assert bridge._group_matches("EURUSD", group) is expected
+
+    def test_the_stub_no_longer_matches_a_bare_substring(self, stub: Any) -> None:
+        assert stub.symbols("XAU", True, 10) == []
+        assert [r["symbol"] for r in stub.symbols("*XAU*", True, 10)] == ["XAUUSD"]
+
+    def test_the_real_backend_passes_the_group_through(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, fake = _real(bridge)
+        terminal.symbols("*,!*USD*", False, 5)
+        assert fake.calls["symbols_get"] == "*,!*USD*"
+
+
+class TestFillingChoice:
+    @staticmethod
+    def _send(bridge: ModuleType, filling: Any = None, **symbol: Any) -> Any:
+        terminal, fake = _real(bridge, **symbol)
+        server = bridge.build_server(terminal, allow_trading=True)
+        args: Dict[str, Any] = {
+            "symbol": "EURUSD",
+            "side": "buy",
+            "volume": 0.1,
+            "sl": 1.09,
+        }
+        if filling:
+            args["filling"] = filling
+        return _call(server, "mt5_order_send", **args), fake
+
+    def test_ioc_is_the_default_when_allowed(self, bridge: ModuleType) -> None:
+        out, fake = self._send(bridge, filling_mode=3, trade_exemode=2)
+        assert out["isError"] is False, out["text"]
+        assert fake.calls["order_send"]["type_filling"] == 1
+
+    def test_fok_is_chosen_when_ioc_is_not_a_flag(self, bridge: ModuleType) -> None:
+        out, fake = self._send(bridge, filling_mode=1, trade_exemode=2)
+        assert out["isError"] is False, out["text"]
+        assert fake.calls["order_send"]["type_filling"] == 0
+
+    def test_return_is_chosen_when_only_it_is_left(self, bridge: ModuleType) -> None:
+        out, fake = self._send(bridge, filling_mode=0, trade_exemode=3)
+        assert out["isError"] is False, out["text"]
+        assert fake.calls["order_send"]["type_filling"] == 2
+
+    def test_market_execution_with_no_flag_has_nothing_usable(
+        self, bridge: ModuleType
+    ) -> None:
+        out, fake = self._send(bridge, filling_mode=0, trade_exemode=2)
+        assert out["isError"] is True
+        assert "no filling policy" in out["text"]
+        assert "order_send" not in fake.calls
+
+    def test_a_disallowed_policy_is_refused_naming_the_allowed_set(
+        self, bridge: ModuleType
+    ) -> None:
+        out, fake = self._send(bridge, "ioc", filling_mode=1, trade_exemode=2)
+        assert out["isError"] is True
+        assert "'ioc' is not allowed" in out["text"]
+        assert "allowed for a market order: fok" in out["text"]
+        assert "order_send" not in fake.calls
+
+    def test_return_is_refused_under_market_execution(self, bridge: ModuleType) -> None:
+        out, fake = self._send(bridge, "return", filling_mode=3, trade_exemode=2)
+        assert out["isError"] is True
+        assert "'return' is not allowed" in out["text"]
+        assert "order_send" not in fake.calls
+
+    def test_instant_execution_accepts_either_whatever_the_flags(
+        self, bridge: ModuleType
+    ) -> None:
+        out, fake = self._send(bridge, "fok", filling_mode=0, trade_exemode=1)
+        assert out["isError"] is False, out["text"]
+        assert fake.calls["order_send"]["type_filling"] == 0
+
+    def test_the_stub_default_is_still_ioc(self, bridge: ModuleType, stub: Any) -> None:
+        server = bridge.build_server(stub, allow_trading=True)
+        out = _payload(
+            server, "mt5_order_send", symbol="EURUSD", side="buy", volume=0.1, sl=1.0
+        )
+        assert out["request"]["filling"] == "ioc"
