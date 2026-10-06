@@ -225,7 +225,7 @@ and filling modes and starts reading them:
 | `mt5_status` | Is the bridge attached? Which account, and is it demo or real? |
 | `mt5_account` | Balance, equity, margin, free margin, margin level, leverage |
 | `mt5_symbols` | Market watch rows with digits, point, spread, volume limits, stops level |
-| `mt5_symbol_info` | Full contract spec: tick size/value, filling and expiration modes, swap, order types |
+| `mt5_symbol_info` | Full contract spec: tick size/value, filling flags (fok/ioc/boc) with execution mode and whether RETURN is usable, expiration modes, swap mode and unit, order types, SL/TP allowed |
 | `mt5_tick` | Latest bid/ask, spread in points |
 | `mt5_rates` | OHLC history for any of MT5's 21 periods |
 | `mt5_positions` / `mt5_orders` | Open positions (filterable by magic) and pending orders |
