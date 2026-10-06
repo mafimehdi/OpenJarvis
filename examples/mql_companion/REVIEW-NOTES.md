@@ -244,8 +244,19 @@ so anything containing a path separator is rejected with a warning.
 
 **How to settle.** Try `Tester\My.set` and a subpath on a real terminal. If MT5 accepts
 them, downgrade the rejection to a note. The warning exists because a missing `.set`
-produces the terminal's unhelpful *"Optimization is not possible"* and silently falls
-back to defaults.
+produces the terminal's unhelpful *"Optimization is not possible"*.
+
+**What the page documents, and what it does not.** MetaQuotes lists a chain: the
+`ExpertParameters` file; if that setup "is not available", `<EA>.set` in the same folder,
+which the terminal rewrites with the last inputs it used; and only if *that* is missing,
+the compiled defaults (where "Optimization is not possible"). So an unresolvable name
+may land on **stale last-used inputs, ranges included**, not on defaults — an earlier
+version of this note, the README and the warning all said "defaults". Whether an
+unresolvable name counts as "not available" is not stated; the warning now names the
+`<EA>.set` fallback as a possibility instead of asserting either outcome. To settle it:
+save an `<EA>.set` with a recognisable input value, run a single test with
+`ExpertParameters=Sub\missing.set`, and read the `Inputs` line of the report — the
+recognisable value means the chain falls through, the compiled default means it jumps.
 
 ---
 
@@ -287,6 +298,27 @@ false.
 Still documentation-derived after both: the two out-of-range rules (a `ForwardDate` at or
 before `FromDate`, or at or after `ToDate`), and what a date MT5 cannot parse does to
 `ForwardDate` in particular, since check 1 probes `FromDate`.
+
+---
+
+## 11. A `.set` with non-ASCII text
+
+**Assumption.** `write_set_file` writes pure-ASCII content as ASCII and anything else as
+UTF-16LE with a BOM, because MT5 writes its own `.set` files that way and the terminal
+is reported not to load a UTF-8 one that contains non-ASCII text.
+
+**Where it lives.** `tester_report.py::write_set_file`.
+
+**Evidence, and how thin it is.** One forum report (mql5.com/en/forum/312820): a `.set`
+containing Arabic characters, written as UTF-8, would not load; written as UTF-16 it did.
+MetaQuotes' build 1525 note that "ANSI, UTF-8 and UTF-16 are supported" is about the file
+*functions* (`FileOpen`), not preset loading, so it does not settle this. Nothing here
+is a vendor statement about `.set` encodings.
+
+**How to settle.** Take an EA with a `string` input, write a `.set` with a non-ASCII value
+using `--write-set`, load it from the tester's **Inputs → Load**, and read the value back.
+If a UTF-8 file loads fine on current builds, the UTF-16 branch is harmless but
+unnecessary; if the UTF-16 one fails, switch the non-ASCII branch to whatever loads.
 
 ---
 

@@ -78,6 +78,7 @@ from __future__ import annotations
 import html as html_lib
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -85,6 +86,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import (
     Any,
@@ -2839,6 +2841,23 @@ SET_FIELD_SEPARATOR = "||"
 SET_BOOLS = ("true", "false")
 
 
+def _grid_steps(start: float, step: float, stop: float) -> Optional[int]:
+    """How many values ``start, start+step, ... <= stop`` holds.
+
+    Counted in decimal on purpose. The range is written as decimal text in the
+    .set, and ``(stop - start) / step`` in binary floating point lands just
+    under the integer it should be for many ordinary grids -
+    ``(0.3 - 0) / 0.1`` is ``2.9999999999999996`` - so a plain
+    ``int(...) + 1`` reports 3 values for a grid of 4. Over a multi-input
+    grid that error compounds, which is how a 1.2-million-pass search got
+    summarised as a modest one.
+    """
+    if not all(math.isfinite(number) for number in (start, step, stop)):
+        return None
+    span = Decimal(repr(stop)) - Decimal(repr(start))
+    return int(span // Decimal(repr(step))) + 1
+
+
 @dataclass
 class SetInput:
     """One line of a ``.set`` file."""
@@ -2892,7 +2911,7 @@ class SetInput:
             return 1 if start == stop else None
         if stop < start:
             return None
-        return int((stop - start) / step) + 1
+        return _grid_steps(start, step, stop)
 
     def is_edge_value(self, number: Optional[float]) -> Optional[bool]:
         """True when ``number`` is the first or last value of the range."""
@@ -3097,8 +3116,20 @@ def write_set_file(set_file: SetFile, path: Optional[Path | str] = None) -> str:
     if path is not None:
         target = Path(path).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
-        # MT5 reads these as ANSI; ASCII-safe content is identical in both.
-        target.write_text(text, encoding="utf-8", newline="\r\n")
+        if text.isascii():
+            # Plain ASCII reads the same under every encoding MT4/MT5 might
+            # assume, and is what most .set files in circulation are.
+            target.write_text(text, encoding="ascii", newline="\r\n")
+        else:
+            # A non-ASCII string input (or comment) is the one place the
+            # encoding matters. MT5 writes its own .set files as UTF-16LE with a
+            # BOM, and the one report found of a UTF-8 .set containing Arabic
+            # text says the terminal would not load it until it was re-saved as
+            # UTF-16 (mql5.com/en/forum/312820). The "ANSI, UTF-8 and UTF-16"
+            # line in the build 1525 notes covers the file *functions*, not
+            # preset loading, so do not lean on it.
+            body = text.replace("\r\n", "\n").replace("\n", "\r\n")
+            target.write_bytes(b"\xff\xfe" + body.encode("utf-16-le"))
     return text
 
 
@@ -3186,10 +3217,15 @@ def _format_set_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"cannot write {value!r} into a .set file")
         if value == int(value):
             return str(int(value))
-        # Not repr(): a tick-sized step like 1e-05 has to stay "0.00001".
-        return f"{value:.10f}".rstrip("0").rstrip(".")
+        # Not repr(): a tick-sized step like 1e-05 has to stay "0.00001". And not
+        # a fixed number of decimals either - ``.10f`` quietly turned
+        # 0.00000123456 into 0.0000012346 and 1.5e-11 into "0". The shortest
+        # round-trip repr, written out without an exponent, loses nothing.
+        return format(Decimal(repr(value)), "f")
     return str(value)
 
 
@@ -3382,7 +3418,12 @@ def tester_ini_warnings(
         warnings.append(
             f"ExpertParameters='{expert_parameters}' contains a path separator: "
             "MT5 resolves that name inside MQL5\\Profiles\\Tester, so copy the "
-            "file there and pass only its file name."
+            "file there and pass only its file name. If the name does not "
+            "resolve, MetaQuotes' documented fallback is "
+            f"MQL5\\Profiles\\Tester\\{Path(expert).name}.set - the inputs the "
+            "terminal last used for this EA, with whatever ranges they had - "
+            "and only then the compiled defaults, so the run may not be "
+            "the one you meant."
         )
     if expert_parameters and not expert_parameters.lower().endswith(".set"):
         warnings.append(

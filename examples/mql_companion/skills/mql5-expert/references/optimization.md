@@ -132,10 +132,20 @@ directory *is* the data folder, and in the normal (main) mode the profiles are
 editable files, which the same help page puts in the data folder. Rather than
 reason about which mode a machine is in, open **File → Open Data Folder** in the
 terminal and put the `.set` next to the ones already in `MQL5\Profiles\Tester`.
-A full path does not work. If no `.set` is found, MT5 does not optimize at all — it loads the EA's
-compiled defaults and reports "Optimization is not possible". With no
-`ExpertParameters` at all it falls back to
-`MQL5\Profiles\Tester\<EA name>.set`.
+A full path is not documented to work. MetaQuotes documents a three-step chain:
+the `ExpertParameters` file; failing that, `MQL5\Profiles\Tester\<EA name>.set`
+(which the terminal rewrites with the last inputs it used, ranges included — so
+it can be a *stale* grid, not defaults); and only if that is missing too, the
+EA's compiled defaults, where "Optimization is not possible". The page does not
+say whether a name that fails to resolve counts as "not available", so do not
+assume it lands on defaults.
+
+**Writing the file:** pure-ASCII content is written as ASCII (identical under
+every encoding). A `.set` with non-ASCII text — a string input or comment — is
+written as UTF-16LE with a BOM, which is what MT5 itself writes; the one report
+of a UTF-8 `.set` with Arabic text says the terminal would not load it until it
+was re-saved as UTF-16 (mql5.com/en/forum/312820). That is a single report, not
+a vendor statement.
 
 **Why `set_from_pass` needs the template:** a pass row lists only the inputs that
 were *optimized*. Writing a `.set` from the row alone leaves every input the run

@@ -2567,6 +2567,116 @@ class TestSetFromPass:
 # ---------------------------------------------------------------------------
 
 
+class TestSetFileFidelity:
+    """What a .set says, counts and writes must survive the round trip.
+
+    Each test is one way the file could say something other than what the
+    pass or the template meant.
+    """
+
+    @staticmethod
+    def _input(start: str, step: str, stop: str) -> Any:
+        return tr.SetInput(
+            name="InpX", value=start, start=start, step=step, stop=stop, optimize=True
+        )
+
+    @pytest.mark.parametrize(
+        ("start", "step", "stop", "values"),
+        [
+            ("0", "0.1", "0.3", 4),  # (0.3 - 0) / 0.1 == 2.9999999999999996
+            ("0", "0.1", "0.7", 8),
+            ("0.1", "0.1", "0.7", 7),
+            ("0", "0.01", "0.29", 30),
+            ("1", "0.05", "2", 21),
+            ("5", "1", "30", 26),
+            ("0", "0.5", "5", 11),
+            ("10", "100", "10", 1),  # a step wider than the range
+            ("10", "100", "50", 1),
+        ],
+    )
+    def test_a_grid_is_counted_in_decimal(
+        self, start: str, step: str, stop: str, values: int
+    ) -> None:
+        assert self._input(start, step, stop).step_count == values
+
+    def test_no_decimal_grid_is_short_by_a_float_rounding_error(self) -> None:
+        """2,950 exact grids: the binary-float count was short on 434 of them."""
+        short = []
+        for start in (0, 0.1, 0.5, 1, 5):
+            for step in (0.1, 0.01, 0.05, 0.2, 0.25, 0.5, 1, 2, 5, 10):
+                for k in range(1, 60):
+                    stop = round(start + k * step, 10)
+                    got = self._input(repr(start), repr(step), repr(stop)).step_count
+                    if got != k + 1:
+                        short.append((start, step, stop, k + 1, got))
+        assert short == []
+
+    def test_the_error_compounds_across_inputs(self) -> None:
+        text = (
+            "InpA=0||0||0.1||0.3||Y\nInpB=0||0||0.1||0.7||Y\nInpC=0||0||0.1||0.6||Y\n"
+        )
+        # 4 * 8 * 7 passes, not the 3 * 7 * 6 = 126 a float count reports
+        assert tr.parse_set_text(text).total_combinations() == 4 * 8 * 7
+
+    @pytest.mark.parametrize(
+        ("value", "text"),
+        [
+            (1e-05, "0.00001"),
+            (0.00000123456, "0.00000123456"),  # .10f gave 0.0000012346
+            (1.5e-11, "0.000000000015"),  # .10f gave "0"
+            (123456.789, "123456.789"),
+            (1e20, "100000000000000000000"),
+            (-2.5, "-2.5"),
+            (-0.0, "0"),
+        ],
+    )
+    def test_a_float_is_written_without_losing_digits(
+        self, value: float, text: str
+    ) -> None:
+        assert tr._format_set_value(value) == text
+        assert float(text) == value
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_value_is_refused_not_written(self, value: float) -> None:
+        with pytest.raises(ValueError, match="cannot write"):
+            tr._format_set_value(value)
+
+    def test_ascii_content_is_written_as_plain_ascii(self, tmp_path: Path) -> None:
+        parsed = tr.parse_set_text("InpLots=0.1||0.1||0.01||1||N\n")
+        target = tmp_path / "plain.set"
+        tr.write_set_file(parsed, target)
+        raw = target.read_bytes()
+        assert raw == b"InpLots=0.1||0.1||0.01||1||N\r\n"
+        assert raw.isascii()
+
+    def test_non_ascii_content_is_written_as_utf16_with_a_bom(
+        self, tmp_path: Path
+    ) -> None:
+        # mql5.com/en/forum/312820: a UTF-8 .set with Arabic text did not load;
+        # UTF-16 did. MT5 writes its own .set files as UTF-16LE with a BOM.
+        parsed = tr.parse_set_text("InpComment=سلام\nInpLots=0.1||0.1||0.01||1||N\n")
+        target = tmp_path / "unicode.set"
+        text = tr.write_set_file(parsed, target)
+        raw = target.read_bytes()
+        assert raw[:2] == b"\xff\xfe"
+        assert raw[2:].decode("utf-16-le") == text.replace("\n", "\r\n")
+        assert "\r\r" not in raw[2:].decode("utf-16-le")
+        # and this module reads back exactly what it wrote
+        again = tr.parse_set_file(target)
+        assert again.get("InpComment").value == "سلام"
+        assert again.names() == ["InpComment", "InpLots"]
+
+    def test_the_unicode_branch_keeps_header_and_unknown_lines(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = tr.parse_set_text("; نسخه\nInpX=1\nsomething odd\n")
+        target = tmp_path / "h.set"
+        tr.write_set_file(parsed, target)
+        again = tr.parse_set_file(target)
+        assert again.header == ["; نسخه"]
+        assert again.unknown == ["something odd"]
+
+
 class TestIniWarnings:
     def test_a_sane_config_has_no_warnings(self) -> None:
         assert (
@@ -2590,6 +2700,19 @@ class TestIniWarnings:
             expert="MyEA", expert_parameters="C:\\sets\\grid.set"
         )
         assert any("Profiles\\Tester" in warning for warning in warnings)
+
+    def test_an_unresolved_name_is_not_said_to_land_on_defaults(self) -> None:
+        # MetaQuotes: ExpertParameters -> <EA>.set (the terminal's last inputs)
+        # -> compiled defaults. Whether a bad name counts as "not available" is
+        # not stated, so the warning names the middle step instead of asserting
+        # either outcome.
+        warnings = tr.tester_ini_warnings(
+            expert="Sub\\MyEA", expert_parameters="C:\\sets\\grid.set"
+        )
+        text = " ".join(" ".join(warnings).split())
+        assert "MyEA.set" in text
+        assert "last used" in text
+        assert text.index("MyEA.set") < text.index("compiled defaults")
 
     def test_a_set_file_with_the_wrong_extension_is_flagged(self) -> None:
         warnings = tr.tester_ini_warnings(expert_parameters="grid.txt")

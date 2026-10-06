@@ -805,6 +805,32 @@ class TestDocumentedCommandsRun:
         assert "out-of-range" in note10, "and what neither check probes"
         assert "probes FromDate" in note10, "check 1 does not probe ForwardDate"
 
+    def test_every_surface_gives_the_three_step_set_fallback(self) -> None:
+        """MetaQuotes lists ExpertParameters, then <EA>.set, then the defaults.
+
+        Three surfaces once said an unresolvable name "proceeds with the EA's
+        compiled defaults". The page documents a middle step - the terminal's
+        own last-used inputs, ranges included - and does not say whether a bad
+        name reaches it, so each surface has to carry the chain and none may
+        assert the shorter outcome.
+        """
+        readme = _flat((COMPANION / "README.md").read_text(encoding="utf-8"))
+        reference = _flat(
+            (SKILL_DIR / "references" / "optimization.md").read_text(encoding="utf-8")
+        )
+        notes = _flat((COMPANION / "REVIEW-NOTES.md").read_text(encoding="utf-8"))
+        assert "stale last-used inputs" in readme
+        assert "run proceeds with the EA's compiled defaults" not in readme
+        assert "grid, not defaults" in reference
+        assert "A full path does not work" not in reference
+        start = notes.index("## 8.")
+        note8 = notes[start : notes.index(" ## ", start + 1)]
+        assert "stale last-used inputs" in note8
+        assert "Sub\\missing.set" in note8, "the experiment that settles it"
+        start = notes.index("## 11.")
+        note11 = notes[start : notes.index(" ## ", start + 1)]
+        assert "forum/312820" in note11 and "thin" in note11
+
     def test_skill_dry_run_writes_nothing(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         home.mkdir()

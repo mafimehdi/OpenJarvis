@@ -480,7 +480,12 @@ Three details that cause silent failures:
 
 1. **MT5 resolves `ExpertParameters` inside `MQL5\Profiles\Tester`.** Pass a
    file *name*, not a path — a path is looked for under that folder and not
-   found, and the run proceeds with the EA's compiled defaults.
+   found. MetaQuotes documents the fallback as a chain: the `ExpertParameters`
+   file, then `MQL5\Profiles\Tester\<EA>.set` (the terminal saves the last
+   inputs it used there automatically, ranges included), then the compiled
+   defaults. So a name that does not resolve may run on *stale last-used inputs*
+   rather than defaults; the page does not say whether an unresolvable name
+   counts as "not available" (REVIEW-NOTES note 8).
 2. **Optimizing without a `.set` does not optimize.** With no
    `ExpertParameters`, MT5 falls back to `MQL5\Profiles\Tester\<EA>.set`; if
    that is missing too it uses the defaults and, per the documentation,
