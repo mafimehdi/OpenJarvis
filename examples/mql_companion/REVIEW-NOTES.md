@@ -258,6 +258,23 @@ save an `<EA>.set` with a recognisable input value, run a single test with
 `ExpertParameters=Sub\missing.set`, and read the `Inputs` line of the report — the
 recognisable value means the chain falls through, the compiled default means it jumps.
 
+That experiment is now **check 13**:
+
+```
+python examples/mql_companion/verify_on_terminal.py --yes --only 13 \
+    --with-fallback-chain --data-dir "<terminal data folder>"
+```
+
+It makes four single tests — no `<EA>.set` and a missing name (the compiled default),
+an explicit file (the control: it must be honoured or the method sees nothing),
+`<EA>.set` with no `ExpertParameters` (the documented second step), and `<EA>.set` with
+the missing name (the question) — and reads one input (`InpMATrendPeriod`, or
+`--probe-input`) out of each report. It also says whether the terminal rewrites
+`<EA>.set` itself during a run, which the page implies. It writes into the terminal's
+data folder, so it backs up and restores `<EA>.set` and is never part of a default run.
+Not probed: a name *containing a path separator*, which is the first half of this note.
+Written and tested against a fake terminal only; no real terminal has run it yet.
+
 ---
 
 ## 9. Optimization report extension when `Report=` has no extension

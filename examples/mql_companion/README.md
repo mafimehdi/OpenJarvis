@@ -672,6 +672,7 @@ python examples/mql_companion/verify_on_terminal.py --yes --json verify.json
 python examples/mql_companion/verify_on_terminal.py --yes --with-model4 --with-grace
 python examples/mql_companion/verify_on_terminal.py --yes --with-forward-opt --set-file MyEA.set
 python examples/mql_companion/verify_on_terminal.py --yes --with-custom-split
+python examples/mql_companion/verify_on_terminal.py --yes --with-fallback-chain --data-dir "<terminal data folder>"
 ```
 
 Nothing launches the terminal without `--yes`, and nothing in the script can
@@ -689,6 +690,19 @@ and the one that settles whether an un-rerun pass is left blank or written as 0)
 and `--with-custom-split` (check 12: three single tests that ask whether
 `ForwardMode=4` splits where `ForwardDate` says, whether other modes really
 ignore it, and what mode 4 does with no date at all).
+
+`--with-fallback-chain` (check 13) is the one check that writes outside
+`--out-dir`, so it needs `--data-dir` (the terminal's data folder, from *File ->
+Open Data Folder*; it is never guessed) as well as `--yes`. It runs four single
+tests to learn what the terminal does when `ExpertParameters` names a file that
+is not there — falls through to `MQL5\Profiles\Tester\<EA>.set`, or jumps to the
+compiled defaults — reading one input back from each report. To do that it has
+to put its own `<EA>.set` where the terminal keeps the inputs it last used, so it
+first copies yours into `--out-dir` (and refuses to run if it cannot), puts it
+back byte for byte afterwards even if a run fails, writes nothing in a dry run,
+and reports loudly if the restore itself fails. An explicit-file control run
+guards the method: if that does not come back with the value it was given, the
+verdict is "unknown", not a guess.
 
 ## Extending
 
