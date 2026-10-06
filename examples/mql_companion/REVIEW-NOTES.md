@@ -336,8 +336,19 @@ Pinned (will fail loudly if it regresses):
   `ShutdownTerminal` and the report path rules.
 - The `mql-bench` evaluation: 12 tasks, deterministic scorer, MQL4-ism detection with
   line numbers.
+- The inputs block of a testing report in the layout the vendor's own article dumps
+  (mql5.com/en/articles/5436, build 1940): the first input beside the label, every
+  further input in its own row with an empty label cell. Until round 23 the reader saw
+  only the first one: the `inputs` metric an agent reads from a report listed one
+  input, and `set_from_report` (a library function; no command-line option calls it
+  yet) rebuilt a `.set` with one input. The label is read as `Inputs` or `Parameters`.
 
 Not pinned, and cannot be:
+
+- Which label current builds use for the inputs block. The article's report says
+  `Parameters:`; the older fixtures here say `Inputs:`. Both are read, but only the
+  first has a vendor source, and it is from 2018. If a real report from a current
+  build shows a third spelling, add it to `LABELS["inputs"]`.
 
 - Anything that requires a live `terminal64.exe`. Those paths are exercised through a
   fake terminal that writes fixture files and exits — which proves the orchestration and

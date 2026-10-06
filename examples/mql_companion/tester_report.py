@@ -123,7 +123,9 @@ LABELS: Dict[str, Tuple[str, ...]] = {
     "to_date": ("To Date", "End Date", "ToDate"),
     "model": ("Model", "Testing Model", "Ticks Model"),
     "execution_mode": ("Execution Mode", "ExecutionMode", "Delays"),
-    "inputs": ("Inputs", "Expert Parameters", "ExpertParameters"),
+    # "Parameters" is the label of the report the vendor's own article dumps
+    # (MQL5 article 5436, build 1940); newer builds say "Inputs".
+    "inputs": ("Inputs", "Parameters", "Expert Parameters", "ExpertParameters"),
     "bars": ("Total Bars", "Bars", "Bars Processed"),
     "ticks": ("Ticks", "Total Ticks", "Ticks Processed"),
     "history_quality_pct": ("History Quality", "History quality"),
@@ -934,10 +936,69 @@ def _refine_text_metrics(report: TesterReport) -> None:
             metrics["history_quality_pct"] = round(number, 4)
 
 
+_ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr\s*>", re.IGNORECASE | re.DOTALL)
+_CELL_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", re.IGNORECASE | re.DOTALL)
+
+
+def _html_rows(text: str) -> List[List[str]]:
+    """Rows of cell texts, empty cells kept (``html_cells`` drops them)."""
+    rows: List[List[str]] = []
+    for row in _ROW_RE.findall(text):
+        cells = [
+            normalize_text(_TAG_RE.sub(" ", cell)) for cell in _CELL_RE.findall(row)
+        ]
+        if cells:
+            rows.append(cells)
+    return rows
+
+
+def _inputs_from_rows(text: str) -> List[str]:
+    """The ``name=value`` items of a report's inputs block, one per row.
+
+    MT5 does not put the inputs in one cell. The report the vendor's own
+    article dumps (mql5.com/en/articles/5436) has the first input beside the
+    label and every further input in its own row with an *empty* label cell:
+
+        Parameters: | Inp_Expert_Title=ExpertMACD
+                    | Inp_Signal_MACD_PeriodFast=12
+                    | Inp_Signal_MACD_PeriodSlow=24
+
+    The article's parser says as much — it keeps reading rows "as long as the
+    first cell in the row is empty". A reader of the flat cell stream sees the
+    first item and loses the rest, so a .set rebuilt from the report quietly
+    held one input and ran the others at their defaults.
+    """
+    items: List[str] = []
+    collecting = False
+    for cells in _html_rows(text):
+        head = cells[0].rstrip(":").strip()
+        if collecting:
+            if head:
+                break
+            value = next((cell for cell in cells[1:] if cell), "")
+            if not value:
+                break
+            items.append(value)
+        elif head and _match_label(head) == "inputs":
+            value = cells[1] if len(cells) > 1 else ""
+            if value:
+                items.append(value)
+                collecting = True
+    return items
+
+
 def parse_html_report(text: str, source: str = "") -> TesterReport:
     report = TesterReport(source=source, format="html")
     cells = html_cells(text)
     parse_cell_stream(cells, report)
+    items = _inputs_from_rows(text)
+    if len(items) > 1:
+        joined = ", ".join(items)
+        report.raw["Inputs"] = joined
+        report.metrics["inputs"] = joined
+    elif items and "inputs" not in report.metrics:
+        report.raw["Inputs"] = items[0]
+        report.metrics["inputs"] = items[0]
     _read_header_line(cells, report)
     _refine_text_metrics(report)
     derive_and_check(report)
@@ -3148,7 +3209,10 @@ def split_inputs_string(text: Any) -> List[Tuple[str, str]]:
     raw = html_lib.unescape(raw)
     if not raw.strip():
         return []
-    pieces = re.split(r"[,;\n\r]+", raw)
+    # A separator only separates when the next thing is ``name=``: a string
+    # input such as ``EURUSD,GBPUSD`` keeps its comma instead of turning
+    # ``GBPUSD`` into a stray piece and being cut in half.
+    pieces = re.split(r"[,;\n\r]+(?=\s*[A-Za-z_][A-Za-z0-9_]*\s*=)", raw)
     pairs: List[Tuple[str, str]] = []
     for piece in pieces:
         item = normalize_text(piece)

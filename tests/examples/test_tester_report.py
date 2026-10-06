@@ -63,6 +63,36 @@ def _row(*cells: str) -> str:
     return "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>\n"
 
 
+_STACKED_INPUTS = (
+    "InpLots=0.1",
+    "InpSymbols=EURUSD,GBPUSD",
+    "InpTrailingStop=30",
+    "InpMATrendPeriod=26",
+)
+
+
+def _stacked_inputs_report(label: str, count: int = 4) -> str:
+    """Inputs as MT5 lays them out: first beside the label, the rest below."""
+    items = _STACKED_INPUTS[:count]
+    rows = "".join(
+        f'<tr><td nowrap></td><td nowrap colspan="3"><b>{item}</b></td></tr>\n'
+        for item in items[1:]
+    )
+    return (
+        "<html><body><table>\n"
+        '<tr><td>Expert Advisor:</td><td colspan="3"><b>MACD Sample</b></td></tr>\n'
+        '<tr><td>Symbol:</td><td colspan="3"><b>EURUSD</b></td></tr>\n'
+        '<tr><td>Period:</td><td colspan="3"><b>H1 (2022.01.03 - 2023.03.31)</b>'
+        "</td></tr>\n"
+        f'<tr><td>{label}</td><td colspan="3"><b>{items[0]}</b></td></tr>\n'
+        f"{rows}"
+        '<tr><td>Company:</td><td colspan="3"><b>Demo</b></td></tr>\n'
+        "<tr><td>Total Net Profit:</td><td><b>1 850.25</b></td>"
+        "<td>Gross Profit:</td><td><b>3 000.00</b></td></tr>\n"
+        "</table></body></html>"
+    )
+
+
 # English MT5 report: two pairs per row, non-breaking-space thousands
 # separators, and the cells that carry two numbers at once.
 _REPORT_ROWS: Tuple[Tuple[str, ...], ...] = (
@@ -2432,6 +2462,44 @@ class TestSetFiles:
         assert parsed.names() == ["InpLots", "InpFastEMA"]
         assert parsed.get("InpLots").value == "0.1"
         assert all(item.optimize is False for item in parsed.inputs)
+
+    def test_one_input_per_row_is_read_in_full(self) -> None:
+        """The shape of the vendor's own report (mql5.com/en/articles/5436)."""
+        for label in ("Inputs:", "Parameters:"):
+            report = tr.parse_html_report(_stacked_inputs_report(label))
+            parsed = tr.set_from_report(report)
+            assert parsed.names() == [
+                "InpLots",
+                "InpSymbols",
+                "InpTrailingStop",
+                "InpMATrendPeriod",
+            ], label
+            assert parsed.get("InpMATrendPeriod").value == "26"
+
+    def test_the_inputs_block_ends_at_the_next_labelled_row(self) -> None:
+        report = tr.parse_html_report(_stacked_inputs_report("Inputs:"))
+        assert "Demo" not in str(report.get("inputs"))
+        assert "Company" not in str(report.raw.get("Inputs"))
+
+    def test_a_string_input_keeps_its_comma(self) -> None:
+        report = tr.parse_html_report(_stacked_inputs_report("Inputs:"))
+        pairs = dict(tr.split_inputs_string(report.raw["Inputs"]))
+        assert pairs["InpSymbols"] == "EURUSD,GBPUSD"
+        mixed = "InpS=EURUSD,GBPUSD;InpB=1"
+        assert tr.split_inputs_string(mixed) == [
+            ("InpS", "EURUSD,GBPUSD"),
+            ("InpB", "1"),
+        ]
+
+    def test_a_single_input_report_is_unchanged(self) -> None:
+        report = tr.parse_html_report(_stacked_inputs_report("Inputs:", count=1))
+        assert tr.set_from_report(report).names() == ["InpLots"]
+
+    def test_the_stacked_layout_survives_the_file_path(self, tmp_path: Path) -> None:
+        path = tmp_path / "ReportTester-1.html"
+        path.write_text(_stacked_inputs_report("Parameters:"), encoding="utf-16")
+        parsed = tr.set_from_report(tr.parse_report(path))
+        assert len(parsed.names()) == 4
 
     def test_a_report_without_inputs_says_so(self) -> None:
         parsed = tr.set_from_report(tr.TesterReport())
