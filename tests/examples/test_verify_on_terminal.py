@@ -261,10 +261,46 @@ case "${FAKE_MODE:-ok}" in
       *) mid="";;
     esac;;
 esac
+# What the tester would load. FAKE_DATA_DIR stands for the terminal's data
+# folder; without it the report carries no inputs, as before.
+prof="${FAKE_DATA_DIR:-/nonexistent}/MQL5/Profiles/Tester"
+ep=$(grep -m1 '^ExpertParameters=' "$cfg" | cut -d= -f2-)
+ea=$(grep -m1 '^Expert=' "$cfg" | cut -d= -f2-); ea="${ea##*/}"
+readval() {
+  tr -d '\\r' < "$1" | grep -m1 '^InpMATrendPeriod=' | cut -d= -f2- | cut -d'|' -f1
+}
+val=26
+chain="${FAKE_CHAIN:-falls-through}"
+if [ -n "$ep" ] && [ -f "$prof/$ep" ] && [ "$chain" != "ignores-explicit" ]; then
+  val=$(readval "$prof/$ep")
+elif [ -n "$ep" ]; then
+  # a name that resolves to nothing
+  if [ "$chain" != "jumps" ] && [ -f "$prof/$ea.set" ]; then
+    val=$(readval "$prof/$ea.set")
+    [ "$chain" = "garbage" ] && val=999
+  fi
+elif [ -f "$prof/$ea.set" ] && [ "$chain" != "ignores-easet" ]; then
+  val=$(readval "$prof/$ea.set")
+fi
+params=""
+if [ -n "${FAKE_DATA_DIR:-}" ]; then
+  params="<tr><td>Parameters:</td><td>InpLots=0.1</td></tr>
+<tr><td></td><td>InpTakeProfit=50</td></tr>
+<tr><td></td><td>InpMATrendPeriod=${val}</td></tr>"
+  # The terminal saves the inputs it used, as the documentation says.
+  if [ -n "${FAKE_CHAIN_REWRITE:-}" ] && [ -d "$prof" ]; then
+    printf 'InpMATrendPeriod=%s\r\n' "$val" > "$prof/$ea.set"
+  fi
+  # A terminal that leaves something unremovable where <EA>.set was.
+  if [ "$chain" = "lockdir" ] && [ "$(wc -l < "$FAKE_CALL_LOG")" -ge 4 ]; then
+    rm -f "$prof/$ea.set"; mkdir -p "$prof/$ea.set"
+  fi
+fi
 cat > "${report}.htm" <<HTM
 <html><body><table>
 <tr><td>From Date</td><td>${from}</td></tr>
 <tr><td>To Date</td><td>${mid:-2023.03.31}</td></tr>
+${params}
 <tr><td>Total Net Profit</td><td>1 850.25</td></tr>
 <tr><td>Profit Factor</td><td>1.55</td></tr>
 <tr><td>Total Trades</td><td>310</td></tr>
@@ -296,6 +332,8 @@ def fake_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("FAKE_CUSTOM", raising=False)
     monkeypatch.delenv("FAKE_DELAY", raising=False)
     monkeypatch.delenv("FAKE_EXIT_DELAY", raising=False)
+    for name in ("FAKE_DATA_DIR", "FAKE_CHAIN", "FAKE_CHAIN_REWRITE"):
+        monkeypatch.delenv(name, raising=False)
     return script
 
 
@@ -1040,3 +1078,376 @@ class TestHelpers:
         pasted = item.paste()
         assert pasted.startswith("1|pass|")
         assert pasted.count("|") == 2
+
+
+# ---------------------------------------------------------------------------
+# Check 13: the ExpertParameters fallback chain
+# ---------------------------------------------------------------------------
+
+#: What the terminal would have saved after the user's last run: UTF-16LE with a
+#: BOM, which is how MT5 writes its own .set files, so a restore that goes
+#: through text instead of bytes would not come back identical.
+_USERS_OWN_SET = b"\xff\xfe" + "InpMATrendPeriod=44||44||1||80||N\r\n".encode(
+    "utf-16-le"
+)
+
+
+@pytest.fixture()
+def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A terminal data folder the fake terminal also reads."""
+    root = tmp_path / "data"
+    (root / "MQL5" / "Profiles" / "Tester").mkdir(parents=True)
+    monkeypatch.setenv("FAKE_DATA_DIR", str(root))
+    return root
+
+
+def _chain_verifier(fake_terminal: Path, tmp_path: Path, data: Path, **extra: Any):
+    options: Dict[str, Any] = {
+        "terminal": fake_terminal,
+        "expert": "Examples/MACD/MACD Sample",
+        "symbol": "EURUSD",
+        "period": "H1",
+        "from_date": "2022.01.01",
+        "to_date": "2023.03.31",
+        "out_dir": tmp_path / "chain-reports",
+        "modes": [0],
+        "set_file": "",
+        "timeout": 60.0,
+        "allow_runs": True,
+        "data_dir": data,
+    }
+    options.update(extra)
+    return vt.Verifier(**options)
+
+
+def _ea_set(data: Path) -> Path:
+    return data / "MQL5" / "Profiles" / "Tester" / "MACD Sample.set"
+
+
+class TestFallbackChain:
+    def test_a_name_that_does_not_resolve_may_fall_through_to_ea_set(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        result = _chain_verifier(
+            fake_terminal, tmp_path, data_dir
+        ).check_13_fallback_chain()
+        assert result.status == vt.PASS, result.evidence
+        assert "falls through to <EA>.set" in result.note
+        joined = "\n".join(result.evidence)
+        # default 26, <EA>.set 33, explicit 41: each run reads a different one.
+        assert "1: ExpertParameters=openjarvis-verify-missing.set -> 3 inputs" in joined
+        assert "compiled default 26" in joined
+        assert (
+            "2: ExpertParameters=openjarvis-verify-explicit.set -> InpMATrendPeriod=41"
+            in joined
+        )
+        assert "3: no ExpertParameters -> InpMATrendPeriod=33" in joined
+        assert (
+            "4: ExpertParameters=openjarvis-verify-missing.set -> InpMATrendPeriod=33"
+            in joined
+        )
+
+    def test_a_terminal_that_jumps_to_the_defaults_is_reported_as_that(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FAKE_CHAIN", "jumps")
+        result = _chain_verifier(
+            fake_terminal, tmp_path, data_dir
+        ).check_13_fallback_chain()
+        assert result.status == vt.PASS, result.evidence
+        assert "straight to the compiled defaults" in result.note
+        assert "falls through" not in result.note
+
+    def test_ignoring_ea_set_when_nothing_is_named_contradicts_the_docs(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FAKE_CHAIN", "ignores-easet")
+        result = _chain_verifier(
+            fake_terminal, tmp_path, data_dir
+        ).check_13_fallback_chain()
+        assert result.status == vt.FAIL
+        assert "second step does not happen" in result.note
+
+    def test_a_failed_control_stops_the_run_and_proves_nothing(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FAKE_CHAIN", "ignores-explicit")
+        verifier = _chain_verifier(fake_terminal, tmp_path, data_dir)
+        result = verifier.check_13_fallback_chain()
+        assert result.status == vt.UNKNOWN
+        assert "control failed" in result.note
+        # Baseline and control only: the two runs that would have misled were
+        # never made.
+        assert verifier.launches == 2
+
+    def test_an_unreadable_outcome_is_unknown_not_a_verdict(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FAKE_CHAIN", "garbage")
+        result = _chain_verifier(
+            fake_terminal, tmp_path, data_dir
+        ).check_13_fallback_chain()
+        assert result.status == vt.UNKNOWN
+        assert "999" in result.note
+
+    def test_the_inputs_are_read_from_the_stacked_report_layout(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        verifier = _chain_verifier(fake_terminal, tmp_path, data_dir)
+        record = verifier.launch(
+            forward_mode=0, tag="layout", expert_parameters="nothing.set"
+        )
+        pairs, why = vt._used_inputs(record)
+        assert why == ""
+        assert [name for name, _ in pairs] == [
+            "InpLots",
+            "InpTakeProfit",
+            "InpMATrendPeriod",
+        ]
+
+    def test_it_reports_when_the_terminal_rewrites_ea_set(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FAKE_CHAIN_REWRITE", "1")
+        result = _chain_verifier(
+            fake_terminal, tmp_path, data_dir
+        ).check_13_fallback_chain()
+        joined = "\n".join(result.evidence)
+        assert "REWRITTEN by the terminal" in joined
+        assert "wrote <EA>.set itself" in joined
+        # Rewriting before each run is what keeps the verdict honest.
+        assert result.status == vt.PASS, joined
+
+    def test_the_probe_input_can_be_named(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        verifier = _chain_verifier(
+            fake_terminal, tmp_path, data_dir, probe_input="InpTakeProfit"
+        )
+        result = verifier.check_13_fallback_chain()
+        # The fake only honours InpMATrendPeriod, so another input never moves.
+        assert result.status == vt.UNKNOWN
+        assert "InpTakeProfit" in "\n".join(result.evidence)
+
+
+class TestFallbackChainTouchesOnlyWhatItMust:
+    def test_the_users_ea_set_comes_back_byte_for_byte(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        _ea_set(data_dir).write_bytes(_USERS_OWN_SET)
+        verifier = _chain_verifier(fake_terminal, tmp_path, data_dir)
+        result = verifier.check_13_fallback_chain()
+        assert result.status == vt.PASS, result.evidence
+        assert _ea_set(data_dir).read_bytes() == _USERS_OWN_SET
+        backups = list((tmp_path / "chain-reports").glob("backup-MACD Sample-*.set"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == _USERS_OWN_SET
+        assert "restored" in "\n".join(result.evidence)
+
+    def test_without_an_original_nothing_is_left_behind(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Even a terminal that saves its own <EA>.set after every run.
+        monkeypatch.setenv("FAKE_CHAIN_REWRITE", "1")
+        _chain_verifier(fake_terminal, tmp_path, data_dir).check_13_fallback_chain()
+        profiles = _ea_set(data_dir).parent
+        assert sorted(p.name for p in profiles.iterdir()) == []
+
+    def test_an_exception_mid_probe_still_restores(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        _ea_set(data_dir).write_bytes(_USERS_OWN_SET)
+        verifier = _chain_verifier(fake_terminal, tmp_path, data_dir)
+        real_launch = verifier.launch
+        calls: List[str] = []
+
+        def exploding(**kwargs: Any) -> Dict[str, Any]:
+            calls.append(kwargs["tag"])
+            if len(calls) == 3:
+                raise RuntimeError("boom")
+            return real_launch(**kwargs)
+
+        verifier.launch = exploding  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            verifier.check_13_fallback_chain()
+        assert _ea_set(data_dir).read_bytes() == _USERS_OWN_SET
+        assert not (_ea_set(data_dir).parent / vt._CHAIN_MISSING).exists()
+        assert not (_ea_set(data_dir).parent / vt._CHAIN_EXPLICIT).exists()
+
+    def test_it_refuses_when_the_backup_cannot_be_made(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        _ea_set(data_dir).write_bytes(_USERS_OWN_SET)
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("in the way", encoding="utf-8")
+        verifier = _chain_verifier(fake_terminal, tmp_path, data_dir, out_dir=blocker)
+        result = verifier.check_13_fallback_chain()
+        assert result.status == vt.UNKNOWN
+        assert "Refused to run" in result.note
+        assert verifier.launches == 0
+        assert _ea_set(data_dir).read_bytes() == _USERS_OWN_SET
+
+    def test_a_restore_that_fails_is_loud(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FAKE_CHAIN", "lockdir")
+        _ea_set(data_dir).write_bytes(_USERS_OWN_SET)
+        result = _chain_verifier(
+            fake_terminal, tmp_path, data_dir
+        ).check_13_fallback_chain()
+        assert result.status == vt.FAIL
+        assert "COULD NOT BE RESTORED" in result.note
+        assert "backup named above" in result.note
+        assert "restoring" in "\n".join(result.evidence)
+
+    def test_a_leftover_probe_file_from_an_interrupted_run_is_cleared(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        leftover = _ea_set(data_dir).parent / vt._CHAIN_MISSING
+        leftover.write_text("InpMATrendPeriod=77\n", encoding="utf-8")
+        result = _chain_verifier(
+            fake_terminal, tmp_path, data_dir
+        ).check_13_fallback_chain()
+        # Had it survived, run 1 would have read 77 as the "default".
+        assert "compiled default 26" in "\n".join(result.evidence)
+        assert not leftover.exists()
+
+    def test_a_dry_run_writes_nothing_and_launches_nothing(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        _ea_set(data_dir).write_bytes(_USERS_OWN_SET)
+        verifier = _chain_verifier(fake_terminal, tmp_path, data_dir, allow_runs=False)
+        result = verifier.check_13_fallback_chain()
+        assert result.status == vt.SKIPPED
+        assert verifier.launches == 0
+        assert _ea_set(data_dir).read_bytes() == _USERS_OWN_SET
+        assert not (tmp_path / "chain-reports").exists()
+        assert not (tmp_path / "calls.log").exists()
+
+    def test_without_a_data_dir_it_asks_rather_than_guesses(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        verifier = _chain_verifier(fake_terminal, tmp_path, data_dir, data_dir=None)
+        result = verifier.check_13_fallback_chain()
+        assert result.status == vt.UNKNOWN
+        assert "--data-dir" in result.note
+        assert verifier.launches == 0
+
+    def test_a_folder_that_is_not_a_data_folder_is_refused(
+        self, fake_terminal: Path, tmp_path: Path, data_dir: Path
+    ) -> None:
+        elsewhere = tmp_path / "somewhere"
+        elsewhere.mkdir()
+        verifier = _chain_verifier(
+            fake_terminal, tmp_path, data_dir, data_dir=elsewhere
+        )
+        result = verifier.check_13_fallback_chain()
+        assert result.status == vt.UNKNOWN
+        assert "no MQL5 folder" in result.note
+        assert list(elsewhere.iterdir()) == []
+
+
+class TestFallbackChainCli:
+    def test_the_check_is_listed_with_its_flag(self) -> None:
+        result = CliRunner().invoke(vt.main, ["--list"])
+        line = next(
+            row for row in result.stdout.splitlines() if row.split()[:1] == ["13"]
+        )
+        assert "[--with-fallback-chain]" in line
+
+    def test_it_is_opt_in(
+        self, fake_terminal: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = _run_cli(
+            fake_terminal, tmp_path, monkeypatch, ["--only", "13", "--yes"]
+        )
+        assert "opt-in: pass --with-fallback-chain" in result.stdout
+        assert not (tmp_path / "calls.log").exists()
+
+    def test_the_flags_reach_the_check(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        result = _run_cli(
+            fake_terminal,
+            tmp_path,
+            monkeypatch,
+            [
+                "--only",
+                "13",
+                "--yes",
+                "--with-fallback-chain",
+                "--data-dir",
+                str(data_dir),
+                "--probe-input",
+                "InpMATrendPeriod",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "[13]" in result.stdout and "ok  " in result.stdout
+        assert "falls through to <EA>.set" in result.stdout
+
+    def test_a_dry_run_through_the_cli_writes_nothing(
+        self,
+        fake_terminal: Path,
+        tmp_path: Path,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        result = _run_cli(
+            fake_terminal,
+            tmp_path,
+            monkeypatch,
+            ["--only", "13", "--with-fallback-chain", "--data-dir", str(data_dir)],
+        )
+        assert "dry run" in result.stdout
+        assert list(_ea_set(data_dir).parent.iterdir()) == []
+
+
+class TestFallbackChainHelpers:
+    def test_the_ea_name_is_the_last_path_part_without_extension(self) -> None:
+        assert vt._ea_stem("Examples/MACD/MACD Sample") == "MACD Sample"
+        assert vt._ea_stem("Examples\\MACD\\MACD Sample.ex5") == "MACD Sample"
+        assert vt._ea_stem("MyEA.mq5") == "MyEA"
+
+    def test_the_probe_prefers_the_named_then_the_ma_period_then_an_integer(
+        self,
+    ) -> None:
+        pairs = [("InpLots", "0.1"), ("InpMATrendPeriod", "26"), ("InpStop", "30")]
+        assert vt._choose_probe(pairs, "InpStop") == "InpStop"
+        assert vt._choose_probe(pairs, "") == "InpMATrendPeriod"
+        assert vt._choose_probe(pairs[:1] + pairs[2:], "") == "InpStop"
+        assert vt._choose_probe([("InpLots", "0.1")], "") == "InpLots"
+        assert vt._choose_probe([("InpName", "abc")], "") is None
+        assert vt._choose_probe(pairs, "InpName") is None

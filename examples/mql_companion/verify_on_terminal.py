@@ -11,7 +11,13 @@ request.
 
 It never sends an order. The only tool it will touch on the MCP bridge is one
 of the read-only names in ``READ_ONLY_TOOLS``; asking it for anything else
-raises rather than degrading. Nothing is written outside ``--out-dir``.
+raises rather than degrading. Nothing is written outside ``--out-dir`` with one
+exception: check 13 (``--with-fallback-chain --data-dir``) has to put
+``<EA>.set`` into the terminal's ``MQL5/Profiles/Tester`` folder, because that
+file is the thing under test. It is strictly opt-in, backs an existing
+``<EA>.set`` up into ``--out-dir`` first (and refuses to run if it cannot),
+restores it afterwards whatever happens, writes nothing in a dry run, and says
+so loudly if the restore fails.
 
 Every check that launches the terminal announces itself first, and nothing
 launches without ``--yes`` — without it the script prints the plan, including
@@ -26,6 +32,8 @@ Usage (from the repository root)::
     python examples/mql_companion/verify_on_terminal.py --yes --with-model4
     python examples/mql_companion/verify_on_terminal.py --yes --with-forward-opt
     python examples/mql_companion/verify_on_terminal.py --yes --with-custom-split
+    python examples/mql_companion/verify_on_terminal.py --yes \\
+        --with-fallback-chain --data-dir <terminal data folder>
 
 Checks are numbered to match ``REVIEW-NOTES.md``. The ones that need a terminal
 are the point of the script; the ones that do not (environment, decode order,
@@ -40,8 +48,10 @@ different responses.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
+import re
 import sys
 import threading
 import time
@@ -102,6 +112,12 @@ CHECKS: Tuple[Tuple[str, str, bool, str], ...] = (
         "Custom split: ForwardMode=4 and the two ForwardDate warnings (notes #1, #10)",
         True,
         "--with-custom-split",
+    ),
+    (
+        "13",
+        "ExpertParameters fallback chain: <EA>.set, then defaults (notes #8)",
+        True,
+        "--with-fallback-chain",
     ),
 )
 
@@ -190,6 +206,75 @@ def _parse_day(raw: Optional[str]) -> Optional[date]:
 def _span(report: Any) -> Tuple[Optional[date], Optional[date]]:
     metrics = getattr(report, "metrics", {}) or {}
     return _parse_day(metrics.get("from_date")), _parse_day(metrics.get("to_date"))
+
+
+#: Inputs the probe tries first. The default expert's moving-average period is
+#: a plain integer whose neighbours are all valid, so a shifted value still runs.
+_PROBE_PREFERENCE: Tuple[str, ...] = ("InpMATrendPeriod",)
+_SENTINEL_SHIFT = 7.0
+_EXPLICIT_SHIFT = 15.0
+_CHAIN_MISSING = "openjarvis-verify-missing.set"
+_CHAIN_EXPLICIT = "openjarvis-verify-explicit.set"
+
+
+def _ea_stem(expert: str) -> str:
+    """``Examples/MACD/MACD Sample`` -> ``MACD Sample``, the EA in ``<EA>.set``."""
+    name = re.split(r"[\\/]", expert.strip())[-1]
+    if name.lower().endswith((".ex5", ".mq5")):
+        name = name[:-4]
+    return name
+
+
+def _number(text: Any) -> Optional[float]:
+    try:
+        return float(str(text).strip())
+    except ValueError:
+        return None
+
+
+def _same_number(left: Any, right: Any) -> bool:
+    a, b = _number(left), _number(right)
+    return a is not None and b is not None and abs(a - b) < 1e-9
+
+
+def _used_inputs(record: Dict[str, Any]) -> Tuple[List[Tuple[str, str]], str]:
+    """The inputs one launch ran with, read from its report, or why not."""
+    if record["error"]:
+        return [], str(record["error"])
+    report = (record["outcome"] or {}).get("report")
+    if report is None:
+        return [], "the run produced no report"
+    raw = getattr(report, "raw", {}) or {}
+    metrics = getattr(report, "metrics", {}) or {}
+    pairs = tr.split_inputs_string(raw.get("Inputs") or metrics.get("inputs") or "")
+    if not pairs:
+        return [], "the report lists no inputs, so nothing can be read back"
+    return pairs, ""
+
+
+def _choose_probe(pairs: Sequence[Tuple[str, str]], wanted: str) -> Optional[str]:
+    """The input whose value will carry the signal: named, preferred, or numeric."""
+    names = {name: value for name, value in pairs}
+    if wanted:
+        return wanted if _number(names.get(wanted)) is not None else None
+    for name in _PROBE_PREFERENCE:
+        if _number(names.get(name)) is not None:
+            return name
+    for name, value in pairs:
+        number = _number(value)
+        if number is not None and number.is_integer() and number >= 1:
+            return name
+    for name, value in pairs:
+        if _number(value) is not None:
+            return name
+    return None
+
+
+def _digest(path: Path) -> Optional[str]:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return None
 
 
 #: A start date in the shape MT5 is documented *not* to parse: the help says
@@ -399,7 +484,11 @@ class Verifier:
         set_file: str,
         timeout: float,
         allow_runs: bool,
+        data_dir: Optional[Path] = None,
+        probe_input: str = "",
     ) -> None:
+        self.data_dir = data_dir
+        self.probe_input = probe_input
         self.terminal = terminal
         self.expert = expert
         self.symbol = symbol
@@ -438,8 +527,14 @@ class Verifier:
         sampler: Optional[_SizeSampler] = None,
         from_date_override: str = "",
         forward_date_override: str = "",
+        expert_parameters: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """One run of the terminal. Never raises: a failure is evidence."""
+        """One run of the terminal. Never raises: a failure is evidence.
+
+        ``expert_parameters`` is ``None`` for the ``--set-file`` the verifier
+        was given, ``""`` to leave the key out of the ini altogether, or a name.
+        """
+        parameters = self.set_file if expert_parameters is None else expert_parameters
         key = (
             forward_mode,
             tag,
@@ -448,6 +543,7 @@ class Verifier:
             process_grace,
             from_date_override,
             forward_date_override,
+            parameters,
         )
         if key in self._cache:
             return self._cache[key]
@@ -460,7 +556,7 @@ class Verifier:
             to_date=self.to_date,
             model=model,
             optimization=optimization,
-            expert_parameters=self.set_file,
+            expert_parameters=parameters,
             forward_mode=forward_mode,
             forward_date=forward_date_override,
             report=str(target.with_suffix("")),
@@ -1282,6 +1378,281 @@ class Verifier:
             )
         return result
 
+    # -- check 13 -----------------------------------------------------------
+
+    def _chain_run(
+        self, result: Result, tag: str, parameters: str, probe: str, label: str
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        record = self.launch(forward_mode=0, tag=tag, expert_parameters=parameters)
+        pairs, why = _used_inputs(record)
+        value = dict(pairs).get(probe) if probe else None
+        shown = (
+            f"ExpertParameters={parameters}" if parameters else "no ExpertParameters"
+        )
+        if pairs and probe and value is None:
+            why = f"{probe} is not among the inputs the report lists"
+        if value is not None:
+            outcome = f"{probe}={value}"
+        elif pairs and not probe:
+            outcome = f"{len(pairs)} inputs read back"  # the probe is chosen from these
+        else:
+            outcome = f"unreadable ({why})"
+        result.add(f"{label}: {shown} -> {outcome} [{record['seconds']}s]")
+        return record, value
+
+    def check_13_fallback_chain(self) -> Result:
+        """What does the terminal do when ``ExpertParameters`` does not resolve?
+
+        MetaQuotes documents a chain: the named file, then ``<EA>.set`` in the
+        same folder, then the compiled defaults. It does not say whether a name
+        that points at nothing counts as "not available". Four single tests
+        settle it by reading one input back out of each report:
+
+        1. no ``<EA>.set``, a missing name: the compiled default ``D``;
+        2. control: an explicit file holding ``E``: must report ``E``, or the
+           method cannot see inputs at all and the rest means nothing;
+        3. ``<EA>.set`` holding ``S``, no ``ExpertParameters``: the documented
+           second step, expected ``S``;
+        4. the same ``<EA>.set``, the missing name: ``S`` means an unresolvable
+           name falls through to it, ``D`` means it jumps to the defaults.
+
+        This is the one check that writes into the terminal's data folder:
+        ``<EA>.set`` is the terminal's own record of the last inputs it used, so
+        it is backed up first, restored afterwards, and never touched in a dry
+        run.
+        """
+        result = Result("13", CHECKS[13][1])
+        started = time.monotonic()
+        if not self.allow_runs:
+            result.status = SKIPPED
+            result.note = "dry run: nothing written, nothing launched (pass --yes)"
+            return result
+        if self.data_dir is None:
+            result.status = UNKNOWN
+            result.note = (
+                "pass --data-dir: the terminal's data folder (File > Open Data "
+                "Folder), which holds MQL5/Profiles/Tester. It is not guessed, "
+                "because this check writes there."
+            )
+            return result
+        data = Path(self.data_dir).expanduser()
+        if not (data / "MQL5").is_dir():
+            result.status = UNKNOWN
+            result.note = (
+                f"{data} has no MQL5 folder; it is not a terminal data folder."
+            )
+            return result
+        profiles = tr.tester_profiles_dir(data)
+        stem = _ea_stem(self.expert)
+        ea_set = profiles / f"{stem}.set"
+        ours = (profiles / _CHAIN_MISSING, profiles / _CHAIN_EXPLICIT)
+
+        # Back up what the terminal saved last time. A timestamped name means a
+        # backup from an earlier, interrupted run is never overwritten with the
+        # probe file that run left behind.
+        original: Optional[bytes] = None
+        if ea_set.exists():
+            stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
+            backup = self.out_dir / f"backup-{stem}-{stamp}.set"
+            try:
+                original = ea_set.read_bytes()
+                self.out_dir.mkdir(parents=True, exist_ok=True)
+                backup.write_bytes(original)
+                if backup.read_bytes() != original:
+                    raise OSError("the backup does not read back identically")
+            except OSError as exc:
+                result.status = UNKNOWN
+                result.note = (
+                    f"Refused to run: {ea_set} exists and could not be backed up "
+                    f"({exc}). Nothing was changed."
+                )
+                return result
+            result.add(f"backed up {ea_set} ({len(original)} bytes) to {backup}")
+        else:
+            result.add(f"{ea_set} does not exist: it will be removed again afterwards")
+
+        try:
+            profiles.mkdir(parents=True, exist_ok=True)
+            self._chain_probe(result, ea_set, ours, stem)
+        except OSError as exc:
+            result.status = UNKNOWN
+            result.add(f"{type(exc).__name__}: {exc}")
+            result.note = "A file in the data folder could not be written."
+        finally:
+            restored = self._chain_restore(result, ea_set, ours, original)
+        if not restored:
+            result.status = FAIL
+            result.note = (
+                f"{ea_set} COULD NOT BE RESTORED. "
+                + (
+                    "Your original is in the backup named above; copy it back."
+                    if original is not None
+                    else "There was no original: delete it by hand."
+                )
+                + " "
+                + result.note
+            ).strip()
+        result.seconds = round(time.monotonic() - started, 2)
+        return result
+
+    def _chain_restore(
+        self,
+        result: Result,
+        ea_set: Path,
+        ours: Sequence[Path],
+        original: Optional[bytes],
+    ) -> bool:
+        ok = True
+        try:
+            if original is not None:
+                ea_set.write_bytes(original)
+                ok = ea_set.read_bytes() == original
+                result.add(f"restored {ea_set}: {'identical' if ok else 'DIFFERS'}")
+            else:
+                if ea_set.exists():
+                    ea_set.unlink()
+                ok = not ea_set.exists()
+                result.add(f"removed {ea_set}: {'gone' if ok else 'STILL THERE'}")
+        except OSError as exc:
+            ok = False
+            result.add(f"restoring {ea_set} failed: {type(exc).__name__}: {exc}")
+        for path in ours:
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError as exc:
+                result.add(f"could not remove {path}: {exc}")
+        return ok
+
+    def _chain_write(self, path: Path, pairs: Sequence[Tuple[str, str]]) -> None:
+        tr.write_set_file(tr.set_from_pairs(list(pairs)), path)
+
+    def _chain_probe(
+        self, result: Result, ea_set: Path, ours: Sequence[Path], stem: str
+    ) -> None:
+        missing_name, explicit_name = _CHAIN_MISSING, _CHAIN_EXPLICIT
+        for path in ours:
+            if path.exists():
+                path.unlink()  # ours by name, left by an interrupted run
+        if ea_set.exists():
+            ea_set.unlink()  # the original is already backed up
+
+        # 1: nothing resolves, so this is the compiled default.
+        baseline, _ = self._chain_run(result, "chain-default", missing_name, "", "1")
+        pairs, why = _used_inputs(baseline)
+        if not pairs:
+            result.status = UNKNOWN
+            result.note = f"The baseline run gave no inputs to read back: {why}."
+            return
+        probe = _choose_probe(pairs, self.probe_input)
+        if probe is None:
+            result.status = UNKNOWN
+            result.note = (
+                "No numeric input to probe with"
+                + (f" ({self.probe_input} is not one)" if self.probe_input else "")
+                + f" among {', '.join(name for name, _ in pairs)}; pass --probe-input."
+            )
+            return
+        default = dict(pairs)[probe]
+        number = float(default)
+        sentinel = tr._format_set_value(number + _SENTINEL_SHIFT)
+        explicit = tr._format_set_value(number + _EXPLICIT_SHIFT)
+        result.add(
+            f"probe input {probe}: compiled default {default}, <EA>.set will hold "
+            f"{sentinel}, the explicit file {explicit}"
+        )
+        if ea_set.exists():
+            result.add(
+                "the terminal wrote <EA>.set itself during a run that had none "
+                "(it saves last-used inputs, as documented); removed again"
+            )
+            ea_set.unlink()
+
+        def with_value(value: str) -> List[Tuple[str, str]]:
+            return [(n, value if n == probe else v) for n, v in pairs]
+
+        # 2: control. If an explicit file is not honoured, nothing below counts.
+        self._chain_write(ours[1], with_value(explicit))
+        _, got = self._chain_run(result, "chain-explicit", explicit_name, probe, "2")
+        if got is None or not _same_number(got, explicit):
+            result.status = UNKNOWN
+            result.note = (
+                "The control failed: an explicit ExpertParameters file holding "
+                f"{explicit} was reported as {got}. Either the terminal did not "
+                "load it (check the data folder is the one this terminal uses) or "
+                "the report's Inputs do not reflect loaded values; either way the "
+                "later runs would prove nothing, so they were not made."
+            )
+            return
+
+        # 3: the documented second step. Rewritten first: the terminal may have
+        # replaced it with its own last-used inputs.
+        self._chain_write(ea_set, with_value(sentinel))
+        written = _digest(ea_set)
+        _, tier2 = self._chain_run(result, "chain-tier2", "", probe, "3")
+        after = _digest(ea_set)
+        result.add(
+            "    <EA>.set after the run: "
+            + ("unchanged" if after == written else "REWRITTEN by the terminal")
+        )
+
+        # 4: the question. Rewritten again for the same reason.
+        self._chain_write(ea_set, with_value(sentinel))
+        _, named = self._chain_run(result, "chain-missing", missing_name, probe, "4")
+        after = _digest(ea_set)
+        result.add(
+            "    <EA>.set after the run: "
+            + ("unchanged" if after == written else "REWRITTEN by the terminal")
+        )
+
+        step2_ok = tier2 is not None and _same_number(tier2, sentinel)
+        step2_ignored = tier2 is not None and _same_number(tier2, default)
+        if step2_ignored:
+            result.status = FAIL
+            result.note = (
+                f"With no ExpertParameters the terminal ran on the compiled default "
+                f"({tier2}) although <EA>.set held {sentinel}: the documented second "
+                "step does not happen on this build. Fix the README, note 8 and "
+                "tester_ini_warnings, which all describe that fallback."
+            )
+            return
+        if not step2_ok or named is None:
+            result.status = UNKNOWN
+            result.note = (
+                f"Run 3 read {tier2} and run 4 read {named}; neither matches the "
+                f"default {default} or the sentinel {sentinel} cleanly, so the "
+                "chain is not settled. Keep the evidence above."
+            )
+            return
+        if _same_number(named, sentinel):
+            result.status = PASS
+            result.note = (
+                "Settled on this build: a name that does not resolve falls through "
+                "to <EA>.set, so a mistyped ExpertParameters runs on whatever the "
+                "terminal last saved. Note 8 can state that as observed, and the "
+                'warning\'s "may not be the one you meant" is right.'
+            )
+        elif _same_number(named, default):
+            result.status = PASS
+            result.note = (
+                "Settled on this build: a name that does not resolve goes straight "
+                "to the compiled defaults and skips <EA>.set, which is only used "
+                "when ExpertParameters is absent. Narrow the README, note 8 and "
+                "tester_ini_warnings, which say an unresolvable name may land on "
+                "<EA>.set."
+            )
+        else:
+            result.status = UNKNOWN
+            result.note = (
+                f"Run 4 read {named}: neither the default {default} nor the "
+                f"sentinel {sentinel}. Keep the evidence above."
+            )
+        result.add(
+            "not probed: a name with a path separator (note 8's first question); "
+            "a bare missing name is the same case only if the terminal treats "
+            "them alike"
+        )
+
     # -- driving ------------------------------------------------------------
 
     def run(
@@ -1301,6 +1672,7 @@ class Verifier:
             "10": self.check_10_bridge,
             "11": self.check_11_forward_cell,
             "12": self.check_12_custom_split,
+            "13": self.check_13_fallback_chain,
         }
         results: List[Result] = []
         for check_id, title, needs_terminal, flag in CHECKS:
@@ -1480,6 +1852,23 @@ def _id_list(raw: str) -> List[str]:
     help="Opt in to the ForwardMode=4 probes (check 12): three single tests.",
 )
 @click.option(
+    "--with-fallback-chain",
+    is_flag=True,
+    help="Opt in to check 13: four single tests that WRITE <EA>.set into "
+    "--data-dir (backed up and restored).",
+)
+@click.option(
+    "--data-dir",
+    default=None,
+    help="The terminal's data folder (File > Open Data Folder), for check 13.",
+)
+@click.option(
+    "--probe-input",
+    default="",
+    help="Input whose value check 13 reads back (default: InpMATrendPeriod, "
+    "else the first integer input).",
+)
+@click.option(
     "--yes", is_flag=True, help="Actually launch the terminal. Without it: plan only."
 )
 @click.option(
@@ -1508,6 +1897,12 @@ def main(**options: Any) -> None:
         set_file=options["set_file"],
         timeout=float(options["timeout"]),
         allow_runs=bool(options["yes"]),
+        data_dir=(
+            Path(options["data_dir"]).expanduser().resolve()
+            if options["data_dir"]
+            else None
+        ),
+        probe_input=options["probe_input"],
     )
     opt_in = {
         "--with-model4": options["with_model4"],
@@ -1517,6 +1912,7 @@ def main(**options: Any) -> None:
         "--with-bridge": options["with_bridge"],
         "--with-forward-opt": options["with_forward_opt"],
         "--with-custom-split": options["with_custom_split"],
+        "--with-fallback-chain": options["with_fallback_chain"],
     }
     results = verifier.run(_id_list(options["only"]), _id_list(options["skip"]), opt_in)
     click.echo(render_report(results, verifier))
