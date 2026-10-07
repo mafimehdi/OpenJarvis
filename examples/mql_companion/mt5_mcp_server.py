@@ -175,7 +175,18 @@ ORDER_TYPE_LABELS: Dict[int, str] = {
     5: "sell_stop",
     6: "buy_stop_limit",
     7: "sell_stop_limit",
+    8: "close_by",
 }
+#: ENUM_ACCOUNT_MARGIN_MODE, in the order the reference lists it (it prints no
+#: numbers, so 0/1/2 are inferred from that order, as for the execution modes).
+ACCOUNT_MARGIN_MODES: Dict[int, str] = {
+    0: "retail_netting",
+    1: "exchange",
+    2: "retail_hedging",
+}
+#: ENUM_ACCOUNT_STOPOUT_MODE: whether the margin-call and stop-out levels are a
+#: percentage of margin level or an amount in the deposit currency.
+STOPOUT_MODES: Dict[int, str] = {0: "percent", 1: "money"}
 #: SYMBOL_FILLING_MODE flags: FOK 1, IOC 2, BOC 4 ("Passive": book-or-cancel,
 #: limit orders only). ``Return`` has no flag at all — the page lists it with "No
 #: identifier" — because it is decided by the execution mode instead: allowed
@@ -634,13 +645,18 @@ class MetaTraderTerminal(Terminal):
             "build": d.get("build"),
             "terminal_path": d.get("path"),
             "company": d.get("company"),
+            # TERMINAL_TRADE_ALLOWED: the Algo Trading button.
             "trade_allowed": bool(d.get("trade_allowed")),
-            "trade_expert": bool(d.get("trade_expert")),
+            # terminal_info() has no trade_expert field (the reference lists
+            # none); ACCOUNT_TRADE_EXPERT lives on account_info(), set below.
+            "trade_expert": None,
+            "tradeapi_disabled": bool(d.get("tradeapi_disabled")),
             "ping_ms": round(_f(d.get("ping_last")) / 1000.0, 3),
         }
         acct = mt5.account_info()
         if acct is not None:
             a = _as_dict(acct)
+            out["trade_expert"] = bool(a.get("trade_expert"))
             mode = int(_f(a.get("trade_mode"), -1))
             out["account"] = {
                 "login": a.get("login"),
@@ -657,6 +673,8 @@ class MetaTraderTerminal(Terminal):
             self._fail("account_info()")
         d = _as_dict(info)
         mode = int(_f(d.get("trade_mode"), -1))
+        raw_margin_mode = d.get("margin_mode")
+        margin_mode = -1 if raw_margin_mode is None else int(_f(raw_margin_mode, -1))
         return {
             "synthetic": False,
             "login": d.get("login"),
@@ -673,6 +691,17 @@ class MetaTraderTerminal(Terminal):
             "trade_mode_raw": mode,
             "trade_allowed": bool(d.get("trade_allowed")),
             "trade_expert": bool(d.get("trade_expert")),
+            "margin_mode": ACCOUNT_MARGIN_MODES.get(margin_mode, "unknown"),
+            "margin_mode_raw": d.get("margin_mode"),
+            # Netting keeps one position per symbol; only hedging allows several.
+            "hedging": None if margin_mode < 0 else margin_mode == 2,
+            "fifo_close": bool(d.get("fifo_close")),
+            "limit_orders": int(_f(d.get("limit_orders"))),
+            "stop_out_mode": STOPOUT_MODES.get(
+                int(_f(d.get("margin_so_mode"), -1)), "unknown"
+            ),
+            "margin_call_level": _f(d.get("margin_so_call")),
+            "stop_out_level": _f(d.get("margin_so_so")),
         }
 
     def symbols(
@@ -890,7 +919,8 @@ class MetaTraderTerminal(Terminal):
                     "price_stoplimit": _f(d.get("price_stoplimit")) or None,
                     "sl": _f(d.get("sl")) or None,
                     "tp": _f(d.get("tp")) or None,
-                    "expiration": _iso(d.get("time_expiration")),
+                    # 0 means "no expiry" (a GTC order), not 1970-01-01.
+                    "expiration": _iso(d.get("time_expiration") or None),
                     "magic": int(_f(d.get("magic"))),
                     "comment": d.get("comment"),
                     "time_setup": _iso(d.get("time_setup")),
@@ -1252,6 +1282,7 @@ class StubTerminal(Terminal):
             "company": "OpenJarvis Stub Broker",
             "trade_allowed": True,
             "trade_expert": True,
+            "tradeapi_disabled": False,
             "ping_ms": 0.0,
             "account": {
                 "login": 1000001,
@@ -1287,6 +1318,14 @@ class StubTerminal(Terminal):
             "trade_mode_raw": mode,
             "trade_allowed": True,
             "trade_expert": True,
+            "margin_mode": "retail_hedging",
+            "margin_mode_raw": 2,
+            "hedging": True,
+            "fifo_close": False,
+            "limit_orders": 200,
+            "stop_out_mode": "percent",
+            "margin_call_level": 100.0,
+            "stop_out_level": 50.0,
         }
 
     def _refresh(self, position: Dict[str, Any]) -> Dict[str, Any]:
@@ -2009,9 +2048,11 @@ def build_tools(
             name="mt5_status",
             description=(
                 "Terminal and account connectivity: build, company, whether "
-                "trading is allowed, and the account's trade mode (demo or "
-                "real). Call this first — every other tool assumes a live "
-                "terminal."
+                "the Algo Trading button is on (trade_allowed), whether the "
+                "account lets Expert Advisors trade (trade_expert), whether "
+                "the API is blocked (tradeapi_disabled), and the account's "
+                "trade mode (demo or real). Call this first — every other tool "
+                "assumes a live terminal."
             ),
             schema=_schema({}),
             handler=h_status,
@@ -2021,7 +2062,10 @@ def build_tools(
             name="mt5_account",
             description=(
                 "Account state: balance, equity, used and free margin, margin "
-                "level, profit, currency, leverage, and trade mode."
+                "level, profit, currency, leverage, trade mode, and what an EA "
+                "must adapt to: margin_mode (retail_netting allows one "
+                "position per symbol, retail_hedging several), fifo_close, "
+                "the pending-order limit and the margin-call/stop-out levels."
             ),
             schema=_schema({}),
             handler=h_account,

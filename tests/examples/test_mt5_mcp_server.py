@@ -2229,6 +2229,20 @@ class _FakeMt5:
             "order_mode": 63,
         }
         self.symbol.update(symbol)
+        self.account = {
+            "login": 7,
+            "trade_mode": 0,
+            "balance": 1000.0,
+            "trade_allowed": True,
+            "trade_expert": True,
+            "margin_mode": 2,
+            "fifo_close": False,
+            "limit_orders": 200,
+            "margin_so_mode": 0,
+            "margin_so_call": 100.0,
+            "margin_so_so": 50.0,
+        }
+        self.orders: List[Dict[str, Any]] = []
         self.calls: Dict[str, Any] = {}
 
     def last_error(self) -> Tuple[int, str]:
@@ -2245,7 +2259,23 @@ class _FakeMt5:
         return {"time": 1_790_000_000, "bid": 1.1, "ask": 1.1001, "last": 0.0}
 
     def account_info(self) -> Dict[str, Any]:
-        return {"login": 7, "trade_mode": 0, "balance": 1000.0}
+        return dict(self.account)
+
+    def terminal_info(self) -> Dict[str, Any]:
+        # The field set the Python reference prints: no trade_expert in it.
+        return {
+            "connected": True,
+            "dlls_allowed": False,
+            "trade_allowed": True,
+            "tradeapi_disabled": False,
+            "build": 4620,
+            "ping_last": 77850,
+            "company": "MetaQuotes Ltd.",
+            "path": "C:\\MT5",
+        }
+
+    def orders_get(self, **kwargs: Any) -> List[Dict[str, Any]]:
+        return list(self.orders)
 
     def copy_rates_from_pos(
         self, name: str, timeframe: int, start: int, count: int
@@ -2502,3 +2532,101 @@ class TestFillingChoice:
             server, "mt5_order_send", symbol="EURUSD", side="buy", volume=0.1, sl=1.0
         )
         assert out["request"]["filling"] == "ioc"
+
+
+class TestAccountAndOrderDecoding:
+    def test_status_takes_trade_expert_from_the_account(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, fake = _real(bridge)
+        fake.account["trade_expert"] = True
+        assert terminal.status()["trade_expert"] is True
+        fake.account["trade_expert"] = False
+        assert terminal.status()["trade_expert"] is False
+
+    def test_status_does_not_invent_a_value_without_an_account(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, fake = _real(bridge)
+        fake.account_info = lambda: None  # type: ignore[method-assign]
+        assert terminal.status()["trade_expert"] is None
+
+    def test_status_reports_the_api_block(self, bridge: ModuleType) -> None:
+        terminal, fake = _real(bridge)
+        assert terminal.status()["tradeapi_disabled"] is False
+        fake.terminal_info = lambda: {  # type: ignore[method-assign]
+            "tradeapi_disabled": True
+        }
+        assert terminal.status()["tradeapi_disabled"] is True
+
+    @pytest.mark.parametrize(
+        "raw,name,hedging",
+        [
+            (0, "retail_netting", False),
+            (1, "exchange", False),
+            (2, "retail_hedging", True),
+        ],
+    )
+    def test_margin_mode_says_whether_positions_can_stack(
+        self, bridge: ModuleType, raw: int, name: str, hedging: bool
+    ) -> None:
+        terminal, fake = _real(bridge)
+        fake.account["margin_mode"] = raw
+        acct = terminal.account()
+        assert acct["margin_mode"] == name
+        assert acct["hedging"] is hedging
+        assert acct["margin_mode_raw"] == raw
+
+    def test_a_missing_margin_mode_is_unknown_not_netting(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, fake = _real(bridge)
+        del fake.account["margin_mode"]
+        acct = terminal.account()
+        assert acct["margin_mode"] == "unknown"
+        assert acct["hedging"] is None
+
+    def test_stop_out_levels_come_with_their_unit(self, bridge: ModuleType) -> None:
+        terminal, fake = _real(bridge)
+        fake.account["margin_so_mode"] = 1
+        acct = terminal.account()
+        assert acct["stop_out_mode"] == "money"
+        assert (acct["margin_call_level"], acct["stop_out_level"]) == (100.0, 50.0)
+        assert acct["limit_orders"] == 200 and acct["fifo_close"] is False
+
+    def test_the_stub_account_carries_the_same_keys(
+        self, bridge: ModuleType, stub: Any
+    ) -> None:
+        terminal, _ = _real(bridge)
+        assert set(terminal.account()) == set(stub.account())
+
+    def test_a_gtc_order_has_no_expiration_not_1970(self, bridge: ModuleType) -> None:
+        terminal, fake = _real(bridge)
+        fake.orders = [
+            {"ticket": 1, "symbol": "EURUSD", "type": 2, "time_expiration": 0},
+            {"ticket": 2, "symbol": "EURUSD", "type": 3, "time_expiration": 86400},
+        ]
+        rows = terminal.orders(None)
+        assert rows[0]["expiration"] is None
+        assert rows[1]["expiration"] == "1970-01-02T00:00:00+00:00"
+
+    @pytest.mark.parametrize(
+        "raw,name",
+        [
+            (0, "buy"),
+            (1, "sell"),
+            (2, "buy_limit"),
+            (3, "sell_limit"),
+            (4, "buy_stop"),
+            (5, "sell_stop"),
+            (6, "buy_stop_limit"),
+            (7, "sell_stop_limit"),
+            (8, "close_by"),
+        ],
+    )
+    def test_order_types_follow_enum_order_type(
+        self, bridge: ModuleType, raw: int, name: str
+    ) -> None:
+        terminal, fake = _real(bridge)
+        fake.orders = [{"ticket": 1, "symbol": "EURUSD", "type": raw}]
+        assert terminal.orders(None)[0]["type"] == name
