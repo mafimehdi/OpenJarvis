@@ -319,7 +319,7 @@ per-call confirmation would take.
 
 `--stub` serves a deterministic synthetic market — five symbols, a seeded
 price walk that is continuous across bars and scales volatility with
-`sqrt(period`, two open positions, and a margin model. Every payload is marked
+`sqrt(period)`, two open positions, and a margin model. Every payload is marked
 `"synthetic": true` so nothing can be mistaken for a quote. `--stub-trade-mode
 real` exercises the trading gate on any OS. The bridge is a single file on
 purpose: copy it to the Windows machine that runs the terminal and it works

@@ -1837,8 +1837,10 @@ def _check_price_is_tradable(
 ) -> None:
     """Reject a market order whose price is nowhere near the quote.
 
-    The broker would answer with a requote or ``price_off``, but an agent
-    learns far more from "you invented this number" than from retcode 10021.
+    A server would answer with a requote (10004) or an invalid price (10015),
+    but an agent learns far more from "you invented this number" than from
+    either code. (10021, ``price_off``, is "no quotes to process the request",
+    not a verdict on a price the caller supplied.)
     """
     if live <= 0:
         return

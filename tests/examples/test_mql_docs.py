@@ -1801,3 +1801,75 @@ def test_the_flag_the_documents_promise_is_on_the_command() -> None:
     }
     assert "--allow-missing-artifact" in opts
     assert "--syntax-only" in opts and "--json-out" in opts
+
+
+def _tutorial_calc_example() -> Dict[str, Any]:
+    """The JSON block the tutorial prints under its ``mt5_calc`` command."""
+    text = TUTORIAL.read_text(encoding="utf-8")
+    start = text.index("--call mt5_calc")
+    fence = text.index("```json", start)
+    body = text[fence + len("```json") : text.index("```", fence + 7)]
+    return json.loads(body)
+
+
+class TestTutorialShowsWhatTheBridgeReturns:
+    """The tutorial's ``mt5_calc`` payload predated the account-currency work:
+    it had no ``synthetic``, ``account_currency``, ``currency_profit`` or
+    ``note``, so a reader comparing it with the real output saw fields the page
+    never explained, and the page still described the figures as unqualified
+    money. Pinning the key set to what the stub returns keeps the example from
+    ageing again; the *values* follow the clock and are not pinned.
+    """
+
+    def _stub_payload(self) -> Dict[str, Any]:
+        stub = mt5_mcp_server.StubTerminal(now_fn=lambda: 1_790_000_000.0)
+        return stub.calc("EURUSD", "buy", 0.5, None, 1.09)
+
+    def test_the_example_has_exactly_the_fields_the_tool_returns(self) -> None:
+        assert set(_tutorial_calc_example()) == set(self._stub_payload())
+
+    def test_the_example_value_types_match(self) -> None:
+        real = self._stub_payload()
+        for key, value in _tutorial_calc_example().items():
+            assert type(value) is type(real[key]), key
+
+    def test_the_example_says_the_figures_are_in_the_account_currency(self) -> None:
+        text = _flat(TUTORIAL.read_text(encoding="utf-8"))
+        assert "are in the account currency, as order_calc_margin" in text
+        assert "currency_profit says which currency" in text
+        assert (
+            "Margin required (also per lot) and profit at a close price, both" in text
+        )
+
+    def test_the_stop_is_sized_with_the_loss_side_tick_value(self) -> None:
+        text = _flat(TUTORIAL.read_text(encoding="utf-8"))
+        assert "tick_value_loss" in text and "a stop-loss is a losing tick" in text
+        stub = mt5_mcp_server.StubTerminal(now_fn=lambda: 1_790_000_000.0)
+        info = stub.symbol_info("EURUSD")
+        assert "tick_value_loss" in info and "tick_value_profit" in info
+
+
+def test_an_invented_price_is_not_blamed_on_retcode_10021() -> None:
+    """10021 is ``TRADE_RETCODE_PRICE_OFF``: the reference calls it "no quotes to
+    process the request", which says nothing about a price the caller chose.
+    A far-off price gets a requote (10004) or an invalid-price retcode (10015)."""
+    text = _flat(TUTORIAL.read_text(encoding="utf-8"))
+    assert "10021" not in text
+    assert "(10004, 10015) a server would answer with" in text
+    source = " ".join(
+        (REPO_ROOT / "examples/mql_companion/mt5_mcp_server.py")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    assert (
+        'learns far more from "you invented this number" than from retcode 10021'
+        not in source
+    )
+    assert "no quotes to process the request" in source
+
+
+def test_the_readme_parenthesis_around_the_volatility_scale_is_closed() -> None:
+    readme = (REPO_ROOT / "examples/mql_companion/README.md").read_text(
+        encoding="utf-8"
+    )
+    assert "`sqrt(period)`" in readme

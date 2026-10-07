@@ -247,19 +247,30 @@ python examples/mql_companion/mt5_mcp_server.py --stub \
 
 ```json
 {
+  "synthetic": true,
   "symbol": "EURUSD", "side": "buy", "volume": 0.5,
-  "price_open": 1.08512, "price_close": 1.09,
-  "margin_required": 542.56, "margin_per_lot": 1085.12,
-  "profit_at_close": 244.0,
+  "price_open": 1.08506, "price_close": 1.09,
+  "margin_required": 542.53, "margin_per_lot": 1085.06,
+  "account_currency": "USD", "currency_profit": "USD",
+  "profit_at_close": 247.0,
   "tick_size": 1e-05, "tick_value": 10.0, "contract_size": 100000.0,
-  "digits": 5, "stops_level_points": 10, "volume_step": 0.01
+  "digits": 5, "stops_level_points": 10, "volume_step": 0.01,
+  "note": "synthetic margin model: lots x contract / 100 (leverage 100), ..."
 }
 ```
+
+The stub's prices follow the clock (each bar has its own seeded value), so
+yours will differ in the last digits; the set of fields is the stable part.
+`margin_required` and `profit_at_close` are in the **account** currency, as
+`order_calc_margin` and `order_calc_profit` return them, and `currency_profit`
+says which currency the symbol's profit is quoted in.
 
 That single call is what a `CalcLotByRisk()` function needs to be checked
 against: margin per lot, tick value, contract size and the minimum stop
 distance. Instead of the agent asserting that 0.1 lots of EURUSD risks "about
-$1 per point", it can compute it.
+$1 per point", it can compute it. For the stop itself use the loss side:
+`mt5_symbol_info` returns `tick_value_loss` beside `tick_value_profit`, and a
+stop-loss is a losing tick.
 
 | Tool | Purpose |
 |---|---|
@@ -267,7 +278,7 @@ $1 per point", it can compute it.
 | `mt5_symbols`, `mt5_symbol_info` | Contract specification: digits, point, spread, volume limits, stops level, tick size/value, filling and expiration modes, swap |
 | `mt5_tick`, `mt5_rates` | Latest quote and OHLC history across all 21 MT5 periods |
 | `mt5_positions`, `mt5_orders` | What is open, filterable by magic number |
-| `mt5_calc` | Margin required (also per lot) and profit at a close price |
+| `mt5_calc` | Margin required (also per lot) and profit at a close price, both in the account currency |
 | `mt5_order_send` | A market order — **only registered with `--allow-trading`, and demo accounts only** |
 
 ### Wiring it into the config
@@ -328,8 +339,9 @@ so the gates are layered and none of them is a flag you can set by accident:
    nearest valid sizes rather than a rounded fill.
 5. **Stops checked before sending.** Side and broker stops level are validated
    locally, prices are snapped to the tick grid, and a price far from the live
-   quote is rejected as invented — a clearer lesson for the model than retcode
-   `10021 price_off`.
+   quote is rejected as invented — a clearer lesson for the model than the
+   requote or invalid-price retcode (`10004`, `10015`) a server would answer
+   with.
 
 ### Developing without a terminal
 
