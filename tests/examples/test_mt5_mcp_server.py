@@ -2222,6 +2222,7 @@ class _FakeMt5:
             "trade_contract_size": 100000.0,
             "trade_tick_size": 0.00001,
             "trade_tick_value": 1.0,
+            "currency_profit": "USD",
             "trade_exemode": 1,
             "filling_mode": 3,
             "expiration_mode": 15,
@@ -2241,6 +2242,7 @@ class _FakeMt5:
             "margin_so_mode": 0,
             "margin_so_call": 100.0,
             "margin_so_so": 50.0,
+            "currency": "EUR",
         }
         self.orders: List[Dict[str, Any]] = []
         self.calls: Dict[str, Any] = {}
@@ -2291,6 +2293,18 @@ class _FakeMt5:
             "spread": 2,
         }
         return [bar]
+
+    def order_calc_margin(
+        self, action: int, name: str, volume: float, price: float
+    ) -> float:
+        self.calls["calc_margin"] = (action, name, volume, price)
+        return 109.91 * volume / 0.1
+
+    def order_calc_profit(
+        self, action: int, name: str, volume: float, opened: float, closed: float
+    ) -> float:
+        self.calls["calc_profit"] = (action, name, volume, opened, closed)
+        return 276.54
 
     def order_send(self, request: Dict[str, Any]) -> Dict[str, Any]:
         self.calls["order_send"] = request
@@ -2630,3 +2644,68 @@ class TestAccountAndOrderDecoding:
         terminal, fake = _real(bridge)
         fake.orders = [{"ticket": 1, "symbol": "EURUSD", "type": raw}]
         assert terminal.orders(None)[0]["type"] == name
+
+
+class TestCalcCurrency:
+    """order_calc_margin / order_calc_profit answer in the ACCOUNT currency.
+
+    The Python reference says so in its first line, and its USDJPY example
+    prices 300 points at 276.54 USD, not in yen. The bridge used to tell the
+    model the opposite and to convert before comparing with equity.
+    """
+
+    def test_the_real_backend_names_the_account_currency(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, fake = _real(bridge)
+        out = terminal.calc("EURUSD", "buy", 0.1, 1.1, 1.103)
+        assert out["account_currency"] == "EUR"
+        assert out["currency_profit"] == "USD"
+        assert out["margin_required"] == pytest.approx(109.91)
+        assert out["profit_at_close"] == pytest.approx(276.54)
+
+    def test_the_note_does_not_send_the_model_to_convert(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, _ = _real(bridge)
+        note = terminal.calc("EURUSD", "buy", 0.1, 1.1, 1.103)["note"]
+        assert "ACCOUNT currency" in note
+        assert "convert before" not in note
+        assert "quoted in the symbol's profit currency" not in note
+
+    def test_the_tool_says_account_currency(
+        self, bridge: ModuleType, server: Any
+    ) -> None:
+        response = server.handle(bridge.MCPRequest(method="tools/list", id=1))
+        tools = {t["name"]: t for t in response.result["tools"]}
+        assert "account currency" in tools["mt5_calc"]["description"]
+
+    def test_stub_margin_for_a_usd_base_pair_is_not_scaled_by_price(
+        self, stub: Any
+    ) -> None:
+        out = stub.calc("USDJPY", "buy", 1.0, None, None)
+        # 100,000 USD of base currency at leverage 100 = 1,000 USD.
+        assert out["margin_required"] == pytest.approx(1000.0)
+        assert out["margin_per_lot"] == pytest.approx(1000.0)
+        assert out["account_currency"] == "USD"
+
+    def test_stub_profit_on_usdjpy_is_converted_out_of_yen(self, stub: Any) -> None:
+        opened = stub.tick("USDJPY")["ask"]
+        out = stub.calc("USDJPY", "buy", 1.0, opened, opened + 0.300)
+        yen = 0.300 * 100_000.0
+        assert out["profit_at_close"] == pytest.approx(yen / (opened + 0.300), abs=0.01)
+        assert out["profit_at_close"] < 1000.0
+
+    def test_stub_declares_jpy_as_the_usdjpy_profit_currency(self, stub: Any) -> None:
+        assert stub.symbol_info("USDJPY")["currency_profit"] == "JPY"
+        assert stub.symbol_info("EURUSD")["currency_profit"] == "USD"
+
+    def test_an_open_usdjpy_position_floats_in_dollars(
+        self, bridge: ModuleType, stub: Any
+    ) -> None:
+        server = bridge.build_server(stub, allow_trading=True, require_stops=False)
+        _payload(server, "mt5_order_send", symbol="USDJPY", side="buy", volume=0.1)
+        position = [p for p in stub.positions("USDJPY", None)][0]
+        # The spread costs 14 points: ~1 USD, versus ~140 if yen leaked in.
+        assert abs(position["profit"]) < 5.0
+        assert stub.account()["margin"] >= 100.0

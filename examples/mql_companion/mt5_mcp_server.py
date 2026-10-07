@@ -957,6 +957,7 @@ class MetaTraderTerminal(Terminal):
         if profit is None:
             self._fail("order_calc_profit()")
         per_lot = mt5.order_calc_margin(order_type, symbol, 1.0, open_price)
+        account = _as_dict(mt5.account_info())
         return {
             "synthetic": False,
             "symbol": symbol,
@@ -967,6 +968,8 @@ class MetaTraderTerminal(Terminal):
             "margin_required": _f(margin),
             "margin_per_lot": _f(per_lot),
             "profit_at_close": _f(profit),
+            "account_currency": account.get("currency"),
+            "currency_profit": info.get("currency_profit"),
             "tick_size": _f(info.get("trade_tick_size")),
             "tick_value": _f(info.get("trade_tick_value")),
             "contract_size": _f(info.get("trade_contract_size")),
@@ -974,8 +977,10 @@ class MetaTraderTerminal(Terminal):
             "stops_level_points": int(_f(info.get("trade_stops_level"))),
             "volume_step": _f(info.get("volume_step")),
             "note": (
-                "margin and profit are quoted in the symbol's profit currency; "
-                "convert before comparing with account equity"
+                "margin_required, margin_per_lot and profit_at_close are in the "
+                "ACCOUNT currency (order_calc_margin and order_calc_profit "
+                "return account currency, not the symbol's profit currency), so "
+                "they compare with equity as they are"
             ),
         }
 
@@ -1048,6 +1053,34 @@ class _StubSymbol:
         return 10**-self.digits
 
 
+STUB_ACCOUNT_CURRENCY = "USD"
+
+
+def _stub_margin(spec: _StubSymbol, price: float, volume: float) -> float:
+    """Margin in the account currency at leverage 100.
+
+    Margin is charged in the symbol's base currency, so it is already in USD
+    for USDJPY and needs the price for every symbol quoted *in* USD.
+    """
+    units = volume * spec.contract_size
+    if spec.name[:3] == STUB_ACCOUNT_CURRENCY:
+        return units / 100.0
+    return units * price / 100.0
+
+
+def _stub_to_account(spec: _StubSymbol, amount: float, price: float) -> float:
+    """A profit-currency amount in the account currency (USD).
+
+    The stub only has to convert a JPY profit on USDJPY: divide by that pair's
+    own price. Every other stub symbol already earns in USD.
+    """
+    if spec.currency_profit == STUB_ACCOUNT_CURRENCY or price <= 0:
+        return amount
+    if spec.name == STUB_ACCOUNT_CURRENCY + spec.currency_profit:
+        return amount / price
+    return amount
+
+
 _STUB_SYMBOLS: Tuple[_StubSymbol, ...] = (
     _StubSymbol(
         "EURUSD",
@@ -1087,6 +1120,7 @@ _STUB_SYMBOLS: Tuple[_StubSymbol, ...] = (
         0.01,
         100.0,
         0.01,
+        currency_profit="JPY",
     ),
     _StubSymbol(
         "XAUUSD",
@@ -1338,11 +1372,13 @@ class StubTerminal(Terminal):
         bid, ask = self._bid_ask(spec.name)
         current = bid if position["side"] == "buy" else ask
         direction = 1.0 if position["side"] == "buy" else -1.0
-        profit = (
+        profit = _stub_to_account(
+            spec,
             (current - position["price_open"])
             * direction
             * position["volume"]
-            * spec.contract_size
+            * spec.contract_size,
+            current,
         )
         row = dict(position)
         row["price_current"] = current
@@ -1356,8 +1392,7 @@ class StubTerminal(Terminal):
             return 0.0
         bid, ask = self._bid_ask(spec.name)
         price = ask if position["side"] == "buy" else bid
-        notional = price * position["volume"] * spec.contract_size
-        return round(notional / 100.0, 2)  # leverage 100
+        return round(_stub_margin(spec, price, position["volume"]), 2)
 
     def symbols(
         self, pattern: str, visible_only: bool, limit: int
@@ -1486,9 +1521,12 @@ class StubTerminal(Terminal):
             _f(price_close) if price_close else (bid if side == "buy" else ask)
         )
         volume = float(volume)
-        notional = open_price * volume * spec.contract_size
         direction = 1.0 if side == "buy" else -1.0
-        profit = (close_price - open_price) * direction * volume * spec.contract_size
+        profit = _stub_to_account(
+            spec,
+            (close_price - open_price) * direction * volume * spec.contract_size,
+            close_price,
+        )
         point = 10**-spec.digits
         return {
             "synthetic": True,
@@ -1497,8 +1535,10 @@ class StubTerminal(Terminal):
             "volume": volume,
             "price_open": round(open_price, spec.digits),
             "price_close": round(close_price, spec.digits),
-            "margin_required": round(notional / 100.0, 2),
-            "margin_per_lot": round(open_price * spec.contract_size / 100.0, 2),
+            "margin_required": round(_stub_margin(spec, open_price, volume), 2),
+            "margin_per_lot": round(_stub_margin(spec, open_price, 1.0), 2),
+            "account_currency": STUB_ACCOUNT_CURRENCY,
+            "currency_profit": spec.currency_profit,
             "profit_at_close": round(profit, 2),
             "tick_size": point,
             "tick_value": spec.tick_value,
@@ -1507,8 +1547,10 @@ class StubTerminal(Terminal):
             "stops_level_points": spec.stops_level_points,
             "volume_step": spec.volume_step,
             "note": (
-                "synthetic margin model: notional / 100 (leverage 100), profit "
-                "in the symbol's profit currency"
+                "synthetic margin model: lots x contract / 100 (leverage 100), "
+                "times the price unless the base currency is USD. Margin and "
+                "profit are in the account currency, as order_calc_margin and "
+                "order_calc_profit return them"
             ),
         }
 
@@ -2182,7 +2224,8 @@ def build_tools(
             name="mt5_calc",
             description=(
                 "Price a proposed trade before the EA does: margin required "
-                "(also per lot) and profit at a close price, plus the "
+                "(also per lot) and profit at a close price, both in the "
+                "account currency (see account_currency), plus the "
                 "symbol's tick value, tick size, contract size, lot step and "
                 "stops level. This is the ground truth for lot-sizing and "
                 "risk-percentage code — compare it against what the EA "

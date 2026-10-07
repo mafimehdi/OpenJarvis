@@ -117,8 +117,9 @@ terminal. Use it instead of assuming:
   min/max/step, and which filling modes the broker accepts all differ per
   symbol and per account.
 - `mt5_calc` to check risk arithmetic. It returns the margin a trade actually
-  needs (and per lot) plus the profit at a close price, so a
-  `CalcLotByRisk()` can be verified numerically rather than argued about.
+  needs (and per lot) plus the profit at a close price, both already in the
+  account currency, so a `CalcLotByRisk()` can be verified numerically
+  rather than argued about.
 - `mt5_rates` to sanity-check a strategy's assumptions against real bars: is
   the stop distance plausible next to the typical H1 range? Does the symbol
   trade in the session the EA runs in?

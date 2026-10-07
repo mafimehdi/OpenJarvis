@@ -229,7 +229,7 @@ and filling modes and starts reading them:
 | `mt5_tick` | Latest bid/ask, spread in points |
 | `mt5_rates` | OHLC history for any of MT5's 21 periods |
 | `mt5_positions` / `mt5_orders` | Open positions (filterable by magic) and pending orders |
-| `mt5_calc` | Margin required (and per lot) plus profit at a close price — the ground truth for lot-sizing code |
+| `mt5_calc` | Margin required (and per lot) plus profit at a close price, both in the account currency — the ground truth for lot-sizing code |
 | `mt5_tester_report` | A Strategy Tester report as numbers: profit factor, all four drawdowns, win rate, streaks, history quality — with optional thresholds that turn it into a pass/fail gate |
 | `mt5_tester_compare` | Two or more reports side by side, with deltas and a winner per criterion |
 | `mt5_tester_optimization` | An optimization table ranked and filtered, with the overfitting checks and the `.set` text that reproduces one pass |
