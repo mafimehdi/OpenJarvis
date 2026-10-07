@@ -2221,10 +2221,10 @@ class _FakeMt5:
             "trade_freeze_level": 0,
             "trade_contract_size": 100000.0,
             "trade_tick_size": 0.00001,
-            "trade_tick_value": 10.0,
+            "trade_tick_value": 1.0,
             "currency_profit": "USD",
-            "trade_tick_value_profit": 10.0,
-            "trade_tick_value_loss": 10.4,
+            "trade_tick_value_profit": 1.0,
+            "trade_tick_value_loss": 1.04,
             "volume_limit": 5.0,
             "trade_exemode": 1,
             "filling_mode": 3,
@@ -2767,9 +2767,9 @@ class TestPositionAndTickFields:
     ) -> None:
         terminal, _ = _real(bridge)
         info = terminal.symbol_info("EURUSD")
-        assert info["tick_value_profit"] == 10.0
-        assert info["tick_value_loss"] == 10.4
-        assert info["tick_value"] == 10.0
+        assert info["tick_value_profit"] == 1.0
+        assert info["tick_value_loss"] == 1.04
+        assert info["tick_value"] == 1.0
         assert info["volume_limit"] == 5.0
 
     def test_fields_the_terminal_omits_are_none_not_zero(
@@ -2781,9 +2781,84 @@ class TestPositionAndTickFields:
         info = terminal.symbol_info("EURUSD")
         assert info["tick_value_loss"] is None
         assert info["volume_limit"] is None
-        assert info["tick_value_profit"] == 10.0
+        assert info["tick_value_profit"] == 1.0
 
     def test_the_stub_offers_the_same_fields(self, stub: Any) -> None:
         info = stub.symbol_info("EURUSD")
         for key in ("tick_value_profit", "tick_value_loss", "volume_limit"):
             assert key in info
+
+
+STUB_SYMBOL_NAMES = ("EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "BTCUSD")
+
+
+class TestStubTickValueIsTheContract:
+    """The stub printed ``tick_value`` 10.0 for EURUSD beside ``tick_size``
+    0.00001 and a 100000 contract: ten times what a tick is worth (10.0 is a
+    *pip*). USDJPY said 6.6 beside a 0.001 tick (a tick is about 0.66) and
+    BTCUSD 1.0 beside 0.01. The stub is what ``CalcLotByRisk()`` is checked
+    against, and the template divides a stop by ``tick_size`` and multiplies
+    by ``tick_value``, so every lot came out ten (or a hundred) times too
+    small without any test noticing: the tests asserted the profit but never
+    that the two columns agreed. A tick is ``contract_size x tick_size`` of the
+    profit currency, converted to the account currency.
+    """
+
+    @pytest.mark.parametrize("name", STUB_SYMBOL_NAMES)
+    def test_tick_value_is_contract_times_tick_in_account_currency(
+        self, stub: Any, name: str
+    ) -> None:
+        info = stub.symbol_info(name)
+        tick = stub.tick(name)
+        price = (tick["bid"] + tick["ask"]) / 2
+        profit_ccy = info["contract_size"] * info["tick_size"]
+        expected = profit_ccy / price if name == "USDJPY" else profit_ccy
+        assert info["tick_value"] == pytest.approx(expected, rel=1e-3)
+
+    @pytest.mark.parametrize("name", STUB_SYMBOL_NAMES)
+    def test_a_one_tick_move_is_worth_the_tick_value(
+        self, stub: Any, name: str
+    ) -> None:
+        info = stub.symbol_info(name)
+        opened = stub.tick(name)["ask"]
+        out = stub.calc(name, "buy", 1.0, opened, opened + info["tick_size"])
+        assert out["profit_at_close"] == pytest.approx(info["tick_value"], abs=0.01)
+        assert out["tick_value"] == pytest.approx(info["tick_value"], rel=1e-3)
+
+    @pytest.mark.parametrize("name", STUB_SYMBOL_NAMES)
+    def test_the_templates_risk_formula_matches_calc(
+        self, stub: Any, name: str
+    ) -> None:
+        """``sl_points * point / tick_size * tick_value`` is the loss per lot in
+        ``RiskVolume``; it has to equal what ``calc`` says a stop that far costs."""
+        info = stub.symbol_info(name)
+        opened = stub.tick(name)["bid"]
+        sl_points = 50
+        loss_per_lot = (
+            sl_points * info["point"] / info["tick_size"] * info["tick_value_loss"]
+        )
+        out = stub.calc(name, "buy", 1.0, opened, opened - sl_points * info["point"])
+        assert -out["profit_at_close"] == pytest.approx(loss_per_lot, rel=0.01)
+
+    def test_eurusd_is_a_dollar_per_tick_not_ten(self, stub: Any) -> None:
+        info = stub.symbol_info("EURUSD")
+        assert info["tick_value"] == 1.0
+        assert info["tick_value"] * 10 == pytest.approx(10.0)  # 10.0 is a pip
+
+    def test_list_and_info_agree(self, stub: Any) -> None:
+        rows = {r["symbol"]: r for r in stub.symbols("*", True, 10)}
+        for name in STUB_SYMBOL_NAMES:
+            assert rows[name]["tick_value"] == stub.symbol_info(name)["tick_value"]
+
+    def test_tick_value_is_not_a_stored_field(self, bridge: ModuleType) -> None:
+        """Derived, so it cannot drift from contract size and tick size again."""
+        fields = bridge._StubSymbol.__dataclass_fields__
+        assert "tick_value" not in fields
+
+    def test_the_fake_real_terminal_is_realistic_too(self, bridge: ModuleType) -> None:
+        """The fixture must obey the same identity or it teaches nothing."""
+        terminal, fake = _real(bridge)
+        info = terminal.symbol_info("EURUSD")
+        assert info["tick_value"] == pytest.approx(
+            fake.symbol["trade_contract_size"] * fake.symbol["trade_tick_size"]
+        )

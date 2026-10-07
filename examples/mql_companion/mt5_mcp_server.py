@@ -1061,7 +1061,6 @@ class _StubSymbol:
     base: float
     spread_points: int
     contract_size: float
-    tick_value: float
     stops_level_points: int
     volume_min: float
     volume_max: float
@@ -1102,6 +1101,20 @@ def _stub_to_account(spec: _StubSymbol, amount: float, price: float) -> float:
     return amount
 
 
+def _stub_tick_value(spec: _StubSymbol, price: float) -> float:
+    """What one tick is worth per lot, in the account currency.
+
+    A tick is ``contract_size x tick_size`` of the profit currency. The stub's
+    tick size is the point, so EURUSD is 100000 x 0.00001 = 1.0, not the 10.0
+    a *pip* is worth: with 10.0 beside a 0.00001 tick size, ``CalcLotByRisk()``
+    code that divides a stop distance by the tick size and multiplies by this
+    value sized every lot ten times too small, and the stub existed to check
+    exactly that arithmetic. It is derived rather than stored so it cannot
+    drift from the contract again, and a JPY tick is converted at ``price``.
+    """
+    return _stub_to_account(spec, spec.contract_size * spec.point, price)
+
+
 _STUB_SYMBOLS: Tuple[_StubSymbol, ...] = (
     _StubSymbol(
         "EURUSD",
@@ -1110,7 +1123,6 @@ _STUB_SYMBOLS: Tuple[_StubSymbol, ...] = (
         1.08500,
         12,
         100_000.0,
-        10.0,
         10,
         0.01,
         100.0,
@@ -1123,7 +1135,6 @@ _STUB_SYMBOLS: Tuple[_StubSymbol, ...] = (
         1.26750,
         15,
         100_000.0,
-        10.0,
         12,
         0.01,
         100.0,
@@ -1136,7 +1147,6 @@ _STUB_SYMBOLS: Tuple[_StubSymbol, ...] = (
         151.250,
         14,
         100_000.0,
-        6.6,
         10,
         0.01,
         100.0,
@@ -1150,7 +1160,6 @@ _STUB_SYMBOLS: Tuple[_StubSymbol, ...] = (
         2350.00,
         25,
         100.0,
-        1.0,
         30,
         0.01,
         50.0,
@@ -1162,7 +1171,6 @@ _STUB_SYMBOLS: Tuple[_StubSymbol, ...] = (
         2,
         64000.00,
         2500,
-        1.0,
         1.0,
         500,
         0.01,
@@ -1445,7 +1453,7 @@ class StubTerminal(Terminal):
             "freeze_level_points": 0,
             "contract_size": spec.contract_size,
             "tick_size": point,
-            "tick_value": spec.tick_value,
+            "tick_value": round(_stub_tick_value(spec, (bid + ask) / 2), 6),
             "currency_profit": spec.currency_profit,
             "visible": True,
             "synthetic": True,
@@ -1565,7 +1573,7 @@ class StubTerminal(Terminal):
             "currency_profit": spec.currency_profit,
             "profit_at_close": round(profit, 2),
             "tick_size": point,
-            "tick_value": spec.tick_value,
+            "tick_value": round(_stub_tick_value(spec, close_price), 6),
             "contract_size": spec.contract_size,
             "digits": spec.digits,
             "stops_level_points": spec.stops_level_points,

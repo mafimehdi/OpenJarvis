@@ -1833,6 +1833,31 @@ class TestTutorialShowsWhatTheBridgeReturns:
         for key, value in _tutorial_calc_example().items():
             assert type(value) is type(real[key]), key
 
+    def test_the_example_contract_fields_are_the_stubs_not_invented(self) -> None:
+        """The page printed tick_value 10.0 beside tick_size 1e-05: a pip's worth
+        beside a point-sized tick. Fields that do not depend on the clock must
+        match what the stub returns for the same call."""
+        real = self._stub_payload()
+        shown = _tutorial_calc_example()
+        for key in (
+            "tick_size",
+            "tick_value",
+            "contract_size",
+            "digits",
+            "stops_level_points",
+            "volume_step",
+            "account_currency",
+            "currency_profit",
+        ):
+            assert shown[key] == real[key], key
+        assert shown["tick_value"] == shown["contract_size"] * shown["tick_size"]
+
+    def test_the_page_talks_about_a_pip_not_a_point(self) -> None:
+        text = _flat(TUTORIAL.read_text(encoding="utf-8"))
+        assert 'risks "about $1 per pip"' in text
+        assert "about $1 per point" not in text
+        assert "a tick is contract_size x tick_size" in text
+
     def test_the_example_says_the_figures_are_in_the_account_currency(self) -> None:
         text = _flat(TUTORIAL.read_text(encoding="utf-8"))
         assert "are in the account currency, as order_calc_margin" in text

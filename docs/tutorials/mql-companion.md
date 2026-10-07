@@ -253,7 +253,7 @@ python examples/mql_companion/mt5_mcp_server.py --stub \
   "margin_required": 542.53, "margin_per_lot": 1085.06,
   "account_currency": "USD", "currency_profit": "USD",
   "profit_at_close": 247.0,
-  "tick_size": 1e-05, "tick_value": 10.0, "contract_size": 100000.0,
+  "tick_size": 1e-05, "tick_value": 1.0, "contract_size": 100000.0,
   "digits": 5, "stops_level_points": 10, "volume_step": 0.01,
   "note": "synthetic margin model: lots x contract / 100 (leverage 100), ..."
 }
@@ -268,7 +268,8 @@ says which currency the symbol's profit is quoted in.
 That single call is what a `CalcLotByRisk()` function needs to be checked
 against: margin per lot, tick value, contract size and the minimum stop
 distance. Instead of the agent asserting that 0.1 lots of EURUSD risks "about
-$1 per point", it can compute it. For the stop itself use the loss side:
+$1 per pip", it can compute it: a tick is `contract_size x tick_size`, so one
+lot gains or loses 1.0 per 0.00001 and 0.1 lot about 1.0 per pip (0.0001). For the stop itself use the loss side:
 `mt5_symbol_info` returns `tick_value_loss` beside `tick_value_profit`, and a
 stop-loss is a losing tick.
 
