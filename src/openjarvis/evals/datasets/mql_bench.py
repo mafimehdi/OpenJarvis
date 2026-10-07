@@ -11,8 +11,7 @@ That last check is what makes this benchmark useful for model selection: MQL5
 is a low-resource language, and the most common failure mode of a small local
 model is not a syntax slip but confidently emitting MQL4 (``Ask``/``Bid``,
 ``OrderSend`` with eleven arguments, ``OrderSelect(i, SELECT_BY_POS)``,
-``AccountBalance``,
-``Close[1]``). Those compile-fail or, worse, compile and trade wrongly.
+``AccountBalance``, ``Close[1]``). Those compile-fail or, worse, compile and trade wrongly.
 
 Run it with::
 

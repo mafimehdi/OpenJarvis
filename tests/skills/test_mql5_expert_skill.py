@@ -423,11 +423,13 @@ class TestMql5NamesAreNotCalledGone:
         REPO_ROOT / "docs" / "tutorials" / "mql-companion.md",
     )
 
-    @pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)
-    def test_orderselect_is_qualified(self, path: Path) -> None:
+    MARKDOWN = [p for p in FILES if p.suffix == ".md"]
+
+    @pytest.mark.parametrize("path", MARKDOWN, ids=lambda p: p.name)
+    def test_orderselect_ticket_form_is_named_as_valid(self, path: Path) -> None:
         text = " ".join(path.read_text(encoding="utf-8").split())
-        assert "OrderSelect" in text
-        assert "SELECT_BY_POS" in text, f"{path.name}: which OrderSelect is gone?"
+        assert "OrderSelect(ticket)" in text, f"{path.name}: which OrderSelect is gone?"
+        assert "SELECT_BY_POS" in text, path.name
 
     @pytest.mark.parametrize("path", FILES[:1] + FILES[2:], ids=lambda p: p.name)
     def test_point_and_digits_functions_are_acknowledged(self, path: Path) -> None:
