@@ -2,7 +2,12 @@
 
 Two lookup tables for the compile-fix loop: what the **compiler** says, and what
 the **trade server** says at runtime. Message wording varies slightly between
-MetaEditor builds — treat the pattern, not the exact text, as the key.
+MetaEditor builds — treat the pattern, not the exact text, as the key. Where the
+MQL5 reference lists the diagnostic, the row ends in `ref. N`: the reference
+tables (`errors/errorscompile`, `errors/warningscompile`) give each message a
+number and a description but not MetaEditor's literal wording, so the number is
+the stable key when the text differs. A row with no `ref.` is one whose message
+the tables do not list.
 
 > Verify anything critical against the MQL5 reference on your own machine. The
 > intended workflow is to index it once (`jarvis memory index ./mql5-reference/`)
@@ -13,17 +18,17 @@ MetaEditor builds — treat the pattern, not the exact text, as the key.
 
 | Pattern | Usual cause | Fix |
 |---|---|---|
-| `'X' - undeclared identifier` | Typo, use before declaration, or an MQL4 predefined variable (`Ask`, `Bid`, `Point`, `Digits`) | Declare it, or replace with `SymbolInfoDouble(_Symbol, SYMBOL_ASK)` / `SYMBOL_BID` / `_Point` / `_Digits` |
-| `';' - semicolon expected` | Missing `;`, or a macro/`input` line malformed | The reported position is where parsing broke — look at the *previous* line too |
-| `'X' - function already defined` | Duplicate event handler or two definitions after a bad merge | Keep one definition; move shared logic into a helper |
-| `wrong parameters count for function 'X'` | MQL4 call signature used in MQL5 (`iMA`, `OrderSend`, `iCustom`) | Use the MQL5 signature: `iMA(symbol, timeframe, period, shift, method, applied_price)` returns a **handle** |
-| `cannot convert enum` | Passing e.g. `OP_BUY` (MQL4) where `ENUM_ORDER_TYPE` is expected | `ORDER_TYPE_BUY` / `ORDER_TYPE_SELL` |
-| `declaration of 'X' hides global declaration` (warning) | Local variable shadows an input or global | Rename the local |
-| `possible loss of data due to type conversion` (warning) | `double` → `int`, or `long` → `int` ticket | Cast explicitly: `(int)`, `(ulong)`, `(double)` |
+| `'X' - undeclared identifier` (ref. 256) | Typo, use before declaration, an MQL4 predefined variable (`Ask`, `Bid`, a bare `Point` or `Digits`; the *functions* `Point()` and `Digits()` exist in MQL5), or an MQL4 constant such as `OP_BUY` | Declare it, or replace with `SymbolInfoDouble(_Symbol, SYMBOL_ASK)` / `SYMBOL_BID` / `_Point` / `_Digits` / `ORDER_TYPE_BUY` |
+| `';' - semicolon expected` (ref. 154) | Missing `;`, or a macro/`input` line malformed | The reported position is where parsing broke — look at the *previous* line too |
+| `'X' - function already defined` (ref. 163-165) | Duplicate event handler or two definitions after a bad merge | Keep one definition; move shared logic into a helper |
+| `wrong parameters count for function 'X'` (ref. 199) | MQL4 call signature used in MQL5 (`iMA`, `OrderSend`, `iCustom`) | Use the MQL5 signature: `iMA(symbol, timeframe, period, shift, method, applied_price)` returns a **handle** |
+| `cannot convert enum` (ref. 262, *Cannot convert to enumeration*) | A value of the wrong type where an enumeration is expected — an integer, or a member of a different enum. (`OP_BUY` itself is *undeclared* in MQL5, which is the first row, not this one.) | Pass the named member (`ORDER_TYPE_BUY`, `PERIOD_H1`). If a cast is deliberate, remember the numbers are not what MQL4 taught: `PERIOD_H1` is 16385, not 60, so `(ENUM_TIMEFRAMES)60` is not an hour chart |
+| `declaration of 'X' hides global declaration` (warning, ref. 62; 61 is the local-variable form, 64 hides a predefined variable) | Local variable shadows an input or global | Rename the local |
+| `possible loss of data due to type conversion` (warning, ref. 43) | `double` → `int`, or `long` → `int` ticket | Cast explicitly: `(int)`, `(ulong)`, `(double)` |
 | `'CTrade' - undeclared identifier` | Missing include | `#include <Trade\Trade.mqh>` (backslash, angle brackets) |
-| `'X' - file not found` / `cannot open include file` | Wrong `/inc` directory, or `#include "..."` for a stdlib header | Compile with `/inc:<data folder>\MQL5`; use `#include <...>` for standard library, `"..."` for your own relative files |
-| `expression not boolean` | Assignment inside `if`, or bitwise `&` instead of `&&` | `==` and `&&` |
-| `'X' - not a class member` | Wrong CTrade/indicator method name | Check the class reference; `CTrade` has `PositionOpen`, `PositionClose`, `PositionModify`, `PositionClosePartial`, `OrderSend`, `Buy`, `Sell` |
+| `'X' - file not found` / `cannot open include file` (ref. 106, *Error accessing a file in #include (probably the file does not exist)*) | Wrong `/inc` directory, or `#include "..."` for a stdlib header | Compile with `/inc:<data folder>\MQL5`; use `#include <...>` for standard library, `"..."` for your own relative files |
+| `check operator precedence for possible error; use parentheses to clarify precedence` (warning, ref. 80) | Operators of different precedence mixed without parentheses: `a & b == c` (`==` binds tighter than `&`), or `x && y || z` | Add the parentheses; use `&&` / `||` for conditions and `&` / `|` only for bit masks |
+| `'X' - undeclared identifier` on a method call (the tables describe it as *Method of structure or class is not declared*, ref. 213, or *No such structure member*, ref. 130) | Wrong CTrade/indicator method name or member | Check the class reference; `CTrade` has `PositionOpen`, `PositionClose`, `PositionModify`, `PositionClosePartial`, `OrderSend`, `Buy`, `Sell` |
 | `array out of range` (runtime) | Indexing a copied buffer before it has enough bars | Compare the count `CopyBuffer` returns with the count you asked for (`-1` is an error; fewer than requested means the data is not there yet) and check `BarsCalculated(handle) < 0`; on the first ticks the buffer really is short |
 
 ### What a compile produces
@@ -76,14 +81,17 @@ Full list: mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes
 | 10025 | `NO_CHANGES` | Modify sent identical SL/TP — skip no-op modifications |
 | 10026 | `SERVER_DISABLES_AT` | AutoTrading disabled server-side |
 | 10027 | `CLIENT_DISABLES_AT` | AutoTrading disabled in the terminal |
-| 10030 | `INVALID_FILL` | Wrong filling mode — use `SetTypeFillingBySymbol()` or read `SYMBOL_FILLING_MODE` |
+| 10030 | `INVALID_FILL` | Wrong filling mode. `SYMBOL_FILLING_MODE` is a flag set: `FOK` = 1, `IOC` = 2 (`BOC` = 4 for limit orders). `RETURN` has no flag; it is refused under Market Execution and is what pending orders use. `CTrade::SetTypeFillingBySymbol()` picks from the flags (FOK first when both are set) |
 
 ## Runtime errors worth guarding
 
 | Error | Guard |
 |---|---|
 | `ERR_TRADE_DISABLED` (4752, "Trading by Expert Advisors prohibited") | Check `TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)` and `MQLInfoInteger(MQL_TRADE_ALLOWED)` before trading |
-| `ERR_TRADE_POSITION_NOT_FOUND` (4753) | The position you selected is gone — re-select by ticket (`PositionSelectByTicket`) and handle the "already closed" path instead of assuming the modify worked |
+| `ERR_TRADE_POSITION_NOT_FOUND` (4753, "Position not found") | The position you selected is gone — re-select by ticket (`PositionSelectByTicket`) and handle the "already closed" path instead of assuming the modify worked |
+| `ERR_TRADE_SEND_FAILED` (4756, "Trade request sending failed") | The request did not go out: log `GetLastError()` and the result's retcode, and re-read positions and pending orders before retrying rather than assuming nothing was placed |
+| `ERR_MARKET_NOT_SELECTED` (4302, "Symbol is not selected in MarketWatch") | `SymbolSelect(symbol, true)` before reading quotes or placing orders on a symbol other than the chart's |
+| `ERR_INDICATOR_DATA_NOT_FOUND` (4806, "Requested data not found") | Check `BarsCalculated(handle)` before `CopyBuffer`; the data may simply not exist yet, so skip the tick instead of treating it as fatal |
 | Positions vanishing mid-loop | Iterate `for(int i = PositionsTotal() - 1; i >= 0; i--)` and re-read `PositionGetTicket(i)` each pass |
 | Wrong position touched | Always compare `PositionGetString(POSITION_SYMBOL)` **and** `PositionGetInteger(POSITION_MAGIC)` |
 | Indicator handle invalid after symbol/timeframe change | Recreate handles in `OnInit`, never lazily inside `OnTick` |

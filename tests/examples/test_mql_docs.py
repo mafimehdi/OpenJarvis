@@ -1050,6 +1050,8 @@ REAL_RUNTIME_ERRORS = frozenset(
         "ERR_TRADE_DEAL_NOT_FOUND",  # 4755
         "ERR_TRADE_SEND_FAILED",  # 4756
         "ERR_TRADE_CALC_FAILED",  # 4758
+        "ERR_MARKET_NOT_SELECTED",  # 4302
+        "ERR_INDICATOR_DATA_NOT_FOUND",  # 4806
     }
 )
 
@@ -1535,6 +1537,174 @@ def test_the_skill_lists_every_code_that_means_success() -> None:
     rows = dict(_skill_retcodes())
     for code in sorted(mt5_mcp_server.RETCODE_SUCCESS):
         assert code in rows, f"{code} means success and the skill does not list it"
+
+
+#: Runtime errors the skill's guard table cites, from the MQL5 reference's
+#: errorcodes page (mql5.com/en/docs/constants/errorswarnings/errorcodes).
+VENDOR_RUNTIME_ERRORS: Dict[str, Tuple[int, str]] = {
+    "ERR_TRADE_DISABLED": (4752, "Trading by Expert Advisors prohibited"),
+    "ERR_TRADE_POSITION_NOT_FOUND": (4753, "Position not found"),
+    "ERR_TRADE_SEND_FAILED": (4756, "Trade request sending failed"),
+    "ERR_MARKET_NOT_SELECTED": (4302, "Symbol is not selected in MarketWatch"),
+    "ERR_INDICATOR_DATA_NOT_FOUND": (4806, "Requested data not found"),
+}
+
+#: Compiler diagnostics the skill's table cites, as ``code -> reference
+#: description`` (errorscompile / warningscompile). The tables give a number and
+#: a description, not MetaEditor's literal message, so rows carry the number.
+VENDOR_COMPILE_DIAGNOSTICS: Dict[int, str] = {
+    154: "Semicolon ';' expected",
+    163: "Function with this name is already defined and has another return type",
+    164: "Function with this name is already defined and has a different set of "
+    "parameters",
+    165: "Function with this name is already defined and implemented",
+    199: "Wrong number of parameters in the function",
+    256: "Undeclared identifier",
+    262: "Cannot convert to enumeration",
+    106: "Error accessing a file in #include (probably the file does not exist)",
+    130: "No such structure member",
+    213: "Method of structure or class is not declared",
+    43: "Possible loss of data at typecasting",
+    62: "global variable",
+    80: "Check operator precedence",
+}
+
+
+def _compile_table_rows() -> Dict[str, str]:
+    """``first cell -> whole row`` of the compiler-error table."""
+    text = COMPILE_ERRORS.read_text(encoding="utf-8")
+    start = text.index("## Compiler errors")
+    section = text[start : text.index("\n### ", start)]
+    rows = {}
+    for line in section.splitlines():
+        if line.startswith("| `") and "Usual cause" not in line:
+            rows[line.split("|")[1].strip()] = line
+    return rows
+
+
+class TestCompileTableCitesTheReference:
+    """The page said ``cannot convert enum`` came from passing ``OP_BUY``, and
+    listed ``expression not boolean`` and ``not a class member`` as MetaEditor
+    messages. The reference's tables have none of the three wordings: ``OP_BUY``
+    is simply *undeclared* in MQL5 (256), the real enumeration diagnostic is
+    262, and the only table entry about mistaken conditions is the precedence
+    warning 80. A fix loop that trusts a pattern the compiler never prints
+    searches for the wrong thing, so every row now carries its reference number
+    and the ones with no table entry carry none.
+    """
+
+    ROW_REFS = {
+        "`'X' - undeclared identifier`": ("256",),
+        "`';' - semicolon expected`": ("154",),
+        "`'X' - function already defined`": ("163-165",),
+        "`wrong parameters count for function 'X'`": ("199",),
+        "`cannot convert enum`": ("262",),
+        "`possible loss of data due to type conversion`": ("43",),
+        "`'X' - file not found` / `cannot open include file`": ("106",),
+    }
+
+    def _row(self, key: str) -> str:
+        rows = _compile_table_rows()
+        for first, line in rows.items():
+            if first.startswith(key):
+                return line
+        raise AssertionError(f"no compiler-table row starts with {key}")
+
+    def test_each_row_names_its_reference_number(self) -> None:
+        for key, refs in self.ROW_REFS.items():
+            row = self._row(key)
+            first = row.split("|")[1]
+            for ref in refs:
+                low = int(ref.split("-")[0])
+                assert low in VENDOR_COMPILE_DIAGNOSTICS, f"{ref} is not pinned"
+                assert f"ref. {ref}" in first, f"{key} lost ref. {ref}"
+
+    def test_hides_row_cites_the_global_warning_and_its_neighbours(self) -> None:
+        first = self._row("`declaration of 'X' hides global declaration`")
+        first = first.split("|")[1]
+        assert "ref. 62" in first
+        assert "61" in first and "64" in first
+        assert "global variable" in VENDOR_COMPILE_DIAGNOSTICS[62]
+
+    def test_enum_row_does_not_blame_op_buy(self) -> None:
+        row = " ".join(self._row("`cannot convert enum`").split())
+        assert "Cannot convert to enumeration" in row
+        assert "OP_BUY` itself is *undeclared*" in row
+        assert "wrong type where an enumeration is expected" in row
+        assert "Passing e.g." not in row
+        undeclared = self._row("`'X' - undeclared identifier`")
+        assert "OP_BUY" in undeclared
+
+    def test_wordings_the_tables_do_not_list_are_gone(self) -> None:
+        rows = " ".join(_compile_table_rows())
+        assert "expression not boolean" not in rows
+        assert "not a class member" not in rows
+        text = COMPILE_ERRORS.read_text(encoding="utf-8")
+        assert "expression not boolean" not in text
+        assert "not a class member" not in text
+
+    def test_precedence_warning_replaces_the_boolean_row(self) -> None:
+        row = self._row("`check operator precedence")
+        assert "ref. 80" in row
+        assert "Check operator precedence" in VENDOR_COMPILE_DIAGNOSTICS[80]
+
+    def test_method_row_cites_both_member_diagnostics(self) -> None:
+        first = self._row("`'X' - undeclared identifier` on a method call")
+        first = first.split("|")[1]
+        assert "ref. 213" in first and "ref. 130" in first
+        assert "not declared" in VENDOR_COMPILE_DIAGNOSTICS[213]
+        assert "structure member" in VENDOR_COMPILE_DIAGNOSTICS[130]
+
+    def test_the_header_explains_what_ref_means(self) -> None:
+        text = " ".join(COMPILE_ERRORS.read_text(encoding="utf-8").split())
+        assert "A row with no `ref.`" in text
+
+
+class TestRuntimeErrorTable:
+    """Each runtime-error row names the constant, then the code and the
+    reference's description in parentheses; all are pinned to the reference's
+    own table, the way the retcodes are."""
+
+    @staticmethod
+    def _rows() -> Dict[str, Tuple[int, str]]:
+        text = COMPILE_ERRORS.read_text(encoding="utf-8")
+        start = text.index("## Runtime errors worth guarding")
+        return {
+            name: (int(code), desc)
+            for name, code, desc in re.findall(
+                r'^\| `(ERR_[A-Z_]+)` \((\d{4}), "([^"]+)"\)',
+                text[start:],
+                re.M,
+            )
+        }
+
+    def test_every_row_matches_the_reference(self) -> None:
+        rows = self._rows()
+        assert rows, "the runtime-error table did not parse"
+        for name, got in rows.items():
+            assert name in VENDOR_RUNTIME_ERRORS, f"{name} is not in the pinned table"
+            assert got == VENDOR_RUNTIME_ERRORS[name], name
+
+    def test_every_pinned_error_has_a_row(self) -> None:
+        rows = self._rows()
+        for name in VENDOR_RUNTIME_ERRORS:
+            assert name in rows, f"{name} is pinned but the page lacks it"
+
+    def test_the_constants_are_real_documented_names(self) -> None:
+        for name in VENDOR_RUNTIME_ERRORS:
+            assert name in REAL_RUNTIME_ERRORS, name
+
+
+def test_the_filling_retcode_row_states_the_flag_values() -> None:
+    """``SYMBOL_FILLING_MODE`` is a flag set (FOK 1, IOC 2, BOC 4); RETURN is not
+    a flag, which is why reading the property cannot say whether it is allowed."""
+    text = COMPILE_ERRORS.read_text(encoding="utf-8")
+    row = " ".join(
+        next(r for r in text.splitlines() if r.startswith("| 10030")).split()
+    )
+    for needle in ("`FOK` = 1", "`IOC` = 2", "`BOC` = 4", "`RETURN` has no flag"):
+        assert needle in row, needle
+    assert "SetTypeFillingBySymbol" in row
 
 
 def _compile_produces_section() -> str:
