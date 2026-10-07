@@ -387,3 +387,22 @@ class TestTemplateTradeFlow:
         ):
             assert needle in cheat, f"cheatsheet lost {needle!r}"
         assert "Bid for a buy, Ask for a sell" in errors
+
+
+class TestTemplateRiskSizing:
+    def test_a_stop_is_sized_with_the_loss_side_tick_value(
+        self, template_code: str
+    ) -> None:
+        # SYMBOL_TRADE_TICK_VALUE is documented as the *profit* value
+        # (SYMBOL_TRADE_TICK_VALUE_PROFIT); a stop-loss is a losing tick, which
+        # has SYMBOL_TRADE_TICK_VALUE_LOSS. The plain one is only the fallback
+        # for a server that leaves the loss value at 0.
+        body = _squash(_function_body(template_code, "RiskVolume"))
+        loss = body.index("SYMBOL_TRADE_TICK_VALUE_LOSS")
+        fallback = body.index(
+            "tick_value=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE)"
+        )
+        assert loss < fallback
+        assert "if(tick_value<=0.0)tick_value=" in body
+        # ...and the loss figure is what feeds the per-lot loss.
+        assert "loss_per_lot=sl_points*point/tick_size*tick_value" in body

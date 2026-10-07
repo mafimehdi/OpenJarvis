@@ -113,7 +113,8 @@ If tools named `mt5_*` are available, the bridge in
 terminal. Use it instead of assuming:
 
 - `mt5_symbol_info` before writing any order or lot-sizing code — digits,
-  point, stops level, contract size, tick size and tick value, volume
+  point, stops level, contract size, tick size and tick value (profit and
+  loss sides — size a stop with `tick_value_loss`), volume
   min/max/step, and which filling modes the broker accepts all differ per
   symbol and per account.
 - `mt5_calc` to check risk arithmetic. It returns the margin a trade actually

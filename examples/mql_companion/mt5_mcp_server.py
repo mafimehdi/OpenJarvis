@@ -370,6 +370,11 @@ def _iso(epoch_seconds: Any) -> Optional[str]:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
 
 
+def _opt_float(value: Any) -> Optional[float]:
+    """A float, or None when the terminal did not report the field at all."""
+    return None if value is None else _f(value)
+
+
 def _decode_bits(value: Any, bits: Dict[int, str]) -> List[str]:
     try:
         mask = int(value or 0)
@@ -385,7 +390,9 @@ def _group_matches(name: str, group: str) -> bool:
     ``EUR*`` is a prefix, ``*XAU*`` a substring and a bare ``XAU`` is that exact
     name — it does not match ``XAUUSD``. Conditions are comma separated and
     applied in order, a leading ``!`` removing what earlier ones selected
-    (mql5.com/en/docs/python_metatrader5/mt5symbolsget_py). The reference does
+    (mql5.com/en/docs/python_metatrader5/mt5symbolsget_py). That page words an
+    exclusion without ``*`` as "names containing" it, so a bare ``!EUR`` is a
+    substring test here although a bare inclusion is an exact name. The reference does
     not say whether matching is case sensitive, so this is not either.
     """
     conditions = [part.strip() for part in str(group or "").split(",") if part.strip()]
@@ -398,7 +405,9 @@ def _group_matches(name: str, group: str) -> bool:
         mask = (condition[1:] if negate else condition).strip().upper()
         head, tail = mask.startswith("*"), mask.endswith("*")
         core = mask.strip("*")
-        if head and tail:
+        if (head and tail) or (negate and not head and not tail):
+            # A bare exclusion reads as "contains" in the reference's own
+            # wording of ``"*,!EUR"`` (names containing EUR are dropped).
             hit = core in wanted
         elif head:
             hit = wanted.endswith(core)
@@ -799,6 +808,12 @@ class MetaTraderTerminal(Terminal):
                 "return_fill_allowed": (
                     None if execution is None else execution != "market"
                 ),
+                # SYMBOL_TRADE_TICK_VALUE is just the profit-side value; a losing
+                # position has its own, which is the one to size a stop-loss with.
+                "tick_value_profit": _opt_float(d.get("trade_tick_value_profit")),
+                "tick_value_loss": _opt_float(d.get("trade_tick_value_loss")),
+                # Cap on position + pending volume in one direction, as given.
+                "volume_limit": _opt_float(d.get("volume_limit")),
                 "digits_raw": d.get("digits"),
             }
         )
@@ -893,7 +908,13 @@ class MetaTraderTerminal(Terminal):
                     "tp": _f(d.get("tp")) or None,
                     "profit": _f(d.get("profit")),
                     "swap": _f(d.get("swap")),
-                    "commission": _f(d.get("commission")),
+                    # The Python TradePosition has no commission field (the
+                    # reference's own column list shows none); charges live on
+                    # the deals. Report what the terminal gave, never a made-up 0.
+                    "commission": (
+                        None if d.get("commission") is None else _f(d["commission"])
+                    ),
+                    "identifier": d.get("identifier"),
                     "magic": int(_f(d.get("magic"))),
                     "comment": d.get("comment"),
                     "time_open": _iso(d.get("time")),
@@ -1440,6 +1461,9 @@ class StubTerminal(Terminal):
                 "expiration_modes": ["gtc", "day", "specified"],
                 "swap_mode": "points",
                 "swap_unit": SWAP_UNITS["points"],
+                "tick_value_profit": row["tick_value"],
+                "tick_value_loss": row["tick_value"],
+                "volume_limit": 0.0,
                 "swap_long": -1.2,
                 "swap_short": -0.8,
                 "margin_currency": "USD",
@@ -2148,7 +2172,9 @@ def build_tools(
             description=(
                 "Full contract specification for one symbol: digits, point, "
                 "spread, volume limits and step, stops and freeze level, "
-                "contract size, tick size/value, filling flags (fok/ioc/boc) with "
+                "contract size, tick size/value (profit and loss sides: use the "
+                "loss one to size a stop), volume limit, filling flags "
+                "(fok/ioc/boc) with "
                 "the execution mode and whether RETURN is usable, expiration "
                 "modes, swap mode and its unit, margin and profit currencies, "
                 "which order types the broker accepts and whether SL/TP may "
@@ -2199,7 +2225,8 @@ def build_tools(
             description=(
                 "Open positions, optionally filtered by symbol and/or magic "
                 "number: side, volume, entry and current price, SL/TP, "
-                "floating profit, swap and commission."
+                "floating profit and swap. commission is null on a real "
+                "terminal (a position carries none; it is charged on the deals)."
             ),
             schema=_schema(
                 {

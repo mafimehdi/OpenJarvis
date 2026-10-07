@@ -81,7 +81,11 @@ double RiskVolume(const double sl_points)
   {
    const double min_lot    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    const double equity     = AccountInfoDouble(ACCOUNT_EQUITY);
-   const double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   //--- SYMBOL_TRADE_TICK_VALUE is the value for a *profitable* tick; a stop-loss
+   //--- is a losing one, which has its own property. Some servers leave it 0.
+   double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+   if(tick_value <= 0.0)
+      tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    const double tick_size  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    const double point      = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
 

@@ -2221,8 +2221,11 @@ class _FakeMt5:
             "trade_freeze_level": 0,
             "trade_contract_size": 100000.0,
             "trade_tick_size": 0.00001,
-            "trade_tick_value": 1.0,
+            "trade_tick_value": 10.0,
             "currency_profit": "USD",
+            "trade_tick_value_profit": 10.0,
+            "trade_tick_value_loss": 10.4,
+            "volume_limit": 5.0,
             "trade_exemode": 1,
             "filling_mode": 3,
             "expiration_mode": 15,
@@ -2245,6 +2248,7 @@ class _FakeMt5:
             "currency": "EUR",
         }
         self.orders: List[Dict[str, Any]] = []
+        self.positions: List[Dict[str, Any]] = []
         self.calls: Dict[str, Any] = {}
 
     def last_error(self) -> Tuple[int, str]:
@@ -2278,6 +2282,9 @@ class _FakeMt5:
 
     def orders_get(self, **kwargs: Any) -> List[Dict[str, Any]]:
         return list(self.orders)
+
+    def positions_get(self, **kwargs: Any) -> List[Dict[str, Any]]:
+        return list(self.positions)
 
     def copy_rates_from_pos(
         self, name: str, timeframe: int, start: int, count: int
@@ -2460,6 +2467,10 @@ class TestSymbolGroups:
             ("*,!*USD", False),
             ("*,!*JPY", True),
             ("!EUR*,*", True),
+            ("*,!UR", False),
+            ("*,!XYZ", True),
+            ("EURUSD,!USD", False),
+            ("UR", False),
             ("", True),
         ],
     )
@@ -2711,3 +2722,68 @@ class TestCalcCurrency:
         assert abs(position["profit"]) < 5.0
         # 0.1 lot = 10,000 USD of base currency at leverage 100.
         assert stub.account()["margin"] - before == pytest.approx(100.0)
+
+
+class TestPositionAndTickFields:
+    def test_a_position_has_no_commission_so_none_not_zero(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, fake = _real(bridge)
+        fake.positions = [
+            {
+                "ticket": 5,
+                "symbol": "EURUSD",
+                "type": 0,
+                "volume": 0.1,
+                "identifier": 5,
+                "magic": 7,
+                "profit": 1.5,
+                "swap": 0.0,
+            }
+        ]
+        row = terminal.positions(None, None)[0]
+        assert row["commission"] is None
+        assert row["identifier"] == 5
+        assert row["profit"] == 1.5
+
+    def test_a_commission_the_terminal_does_report_is_kept(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, fake = _real(bridge)
+        fake.positions = [
+            {"ticket": 5, "symbol": "EURUSD", "type": 1, "commission": -0.7}
+        ]
+        assert terminal.positions(None, None)[0]["commission"] == -0.7
+
+    def test_the_tool_says_where_the_commission_went(
+        self, bridge: ModuleType, server: Any
+    ) -> None:
+        response = server.handle(bridge.MCPRequest(method="tools/list", id=1))
+        tools = {t["name"]: t for t in response.result["tools"]}
+        assert "commission is null" in tools["mt5_positions"]["description"]
+
+    def test_symbol_info_has_both_tick_values_and_the_volume_limit(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, _ = _real(bridge)
+        info = terminal.symbol_info("EURUSD")
+        assert info["tick_value_profit"] == 10.0
+        assert info["tick_value_loss"] == 10.4
+        assert info["tick_value"] == 10.0
+        assert info["volume_limit"] == 5.0
+
+    def test_fields_the_terminal_omits_are_none_not_zero(
+        self, bridge: ModuleType
+    ) -> None:
+        terminal, fake = _real(bridge)
+        for key in ("trade_tick_value_loss", "volume_limit"):
+            del fake.symbol[key]
+        info = terminal.symbol_info("EURUSD")
+        assert info["tick_value_loss"] is None
+        assert info["volume_limit"] is None
+        assert info["tick_value_profit"] == 10.0
+
+    def test_the_stub_offers_the_same_fields(self, stub: Any) -> None:
+        info = stub.symbol_info("EURUSD")
+        for key in ("tick_value_profit", "tick_value_loss", "volume_limit"):
+            assert key in info
