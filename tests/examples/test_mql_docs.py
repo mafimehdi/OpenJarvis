@@ -1898,3 +1898,81 @@ def test_the_readme_parenthesis_around_the_volatility_scale_is_closed() -> None:
         encoding="utf-8"
     )
     assert "`sqrt(period)`" in readme
+
+
+CHEATSHEET = SKILL_DIR / "references" / "mql5-api-cheatsheet.md"
+
+#: What the reference says each clock returns in the Strategy Tester
+#: (mql5.com/en/docs/dateandtime/<function>): ``function -> what it equals``.
+VENDOR_TESTER_CLOCKS: Dict[str, str] = {
+    "TimeTradeServer": "TimeCurrent()",
+    "TimeLocal": "TimeCurrent()",
+    "TimeGMT": "TimeTradeServer()",
+}
+
+
+def _clock_table() -> Dict[str, Tuple[str, str]]:
+    """``function -> (live cell, tester cell)`` of the cheatsheet's clock table."""
+    text = CHEATSHEET.read_text(encoding="utf-8")
+    start = text.index("### Which clock a time function reads")
+    section = text[start : text.index("\nNew-bar guard", start)]
+    rows = {}
+    for line in section.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if line.startswith("| `Time") and len(cells) == 3:
+            rows[cells[0].strip("`").rstrip("()")] = (cells[1], cells[2])
+    return rows
+
+
+class TestTimeClocks:
+    """The cheatsheet taught ``bool is_london = (dt.hour >= 8 && ...)`` over
+    ``TimeToStruct(TimeCurrent(), dt)``. ``TimeCurrent()`` is the *server's*
+    clock, so the window was the broker's 08:00-17:00, not London's, and the
+    name told a model it was a city session. The reference adds that in the
+    tester ``TimeLocal()`` and ``TimeGMT()`` are both simply the simulated server
+    time, so a GMT filter written with either one is right live and shifted by
+    the broker's offset in a backtest. ``compile-errors.md`` warned off only
+    ``TimeLocal()``.
+    """
+
+    def test_the_session_flag_is_not_named_after_a_city(self) -> None:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        assert "is_london" not in text
+        assert "in_session" in text
+        assert "// BROKER hours" in text
+
+    def test_the_table_lists_every_clock(self) -> None:
+        assert set(_clock_table()) == {
+            "TimeCurrent",
+            "TimeTradeServer",
+            "TimeLocal",
+            "TimeGMT",
+        }
+
+    @pytest.mark.parametrize("name,equals", sorted(VENDOR_TESTER_CLOCKS.items()))
+    def test_each_tester_cell_matches_the_reference(
+        self, name: str, equals: str
+    ) -> None:
+        _, tester = _clock_table()[name]
+        assert tester.startswith(f"Always equal to `{equals}`"), (name, tester)
+
+    def test_timecurrent_is_the_one_that_is_simulated_from_history(self) -> None:
+        _, tester = _clock_table()["TimeCurrent"]
+        assert "Simulated from the history" in tester
+
+    def test_the_gmt_row_says_it_is_not_gmt_in_the_tester(self) -> None:
+        _, tester = _clock_table()["TimeGMT"]
+        assert "server time, **not** GMT" in tester
+        live, _ = _clock_table()["TimeGMT"]
+        assert "PC's local time" in live
+
+    def test_the_prose_names_the_consequence_and_the_safe_function(self) -> None:
+        text = _flat(CHEATSHEET.read_text(encoding="utf-8"))
+        assert "In the tester all four are the same server clock" in text
+        assert "TimeCurrent() is the only one that means the same thing" in text
+        assert "an input in server hours" in text
+
+    def test_the_divergence_row_names_timegmt_as_well(self) -> None:
+        lines = COMPILE_ERRORS.read_text(encoding="utf-8").splitlines()
+        row = next(r for r in lines if r.startswith("| Tester vs live"))
+        assert "TimeGMT()" in row and "TimeLocal()" in row

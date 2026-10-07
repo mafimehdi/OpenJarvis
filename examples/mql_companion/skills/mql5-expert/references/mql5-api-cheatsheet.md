@@ -283,19 +283,40 @@ reads as a real number.
 ## Time and bars
 
 ```mql5
-datetime now      = TimeCurrent();               // last known server time
+datetime now      = TimeCurrent();               // server time of the tick (not the PC clock)
 datetime bar_time = iTime(_Symbol, _Period, 0);  // open time of current bar
 int      bars     = Bars(_Symbol, _Period);
 
 MqlDateTime dt;
 TimeToStruct(TimeCurrent(), dt);
-bool is_london = (dt.hour >= 8 && dt.hour < 17 && dt.day_of_week >= 1 && dt.day_of_week <= 5);
+bool in_session = (dt.hour >= 8 && dt.hour < 17 && dt.day_of_week >= 1 && dt.day_of_week <= 5);  // BROKER hours
 bool is_friday = (dt.day_of_week == 5);
 
 datetime series[];
 CopyTime(_Symbol, _Period, 0, 5, series);        // 5 bars; index 0 is the OLDEST
 ArraySetAsSeries(series, true);                  // now series[0] is the newest bar
 ```
+
+### Which clock a time function reads
+
+`TimeToStruct(TimeCurrent(), dt)` gives the **broker's** clock, so `in_session`
+above is a window in server hours, not London or New York: how far a broker's
+clock sits from any city's depends on the broker, and it may shift with
+daylight saving. Make the window an `input` in server hours rather than a
+constant that looks like a city.
+
+| Function | Live | In the Strategy Tester |
+|---|---|---|
+| `TimeCurrent()` | Server time of the tick being handled in `OnTick`; independent of the PC's clock | Simulated from the history |
+| `TimeTradeServer()` | Estimated server time, calculated in the terminal from the PC's time settings | Always equal to `TimeCurrent()` |
+| `TimeLocal()` | The PC's clock | Always equal to `TimeCurrent()` |
+| `TimeGMT()` | GMT calculated from the PC's local time, with the DST switch | Always equal to `TimeTradeServer()` — server time, **not** GMT |
+
+(mql5.com/en/docs/dateandtime/timecurrent, .../timetradeserver, .../timelocal,
+.../timegmt.) In the tester all four are the same server clock. So a
+"13:00-17:00 GMT" filter written with `TimeGMT()` or `TimeLocal()` works live and
+is shifted by the broker's offset in a backtest, and the two results cannot be
+compared; `TimeCurrent()` is the only one that means the same thing in both.
 
 New-bar guard (do not trade every tick in a bar strategy):
 
