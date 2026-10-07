@@ -2704,8 +2704,10 @@ class TestCalcCurrency:
         self, bridge: ModuleType, stub: Any
     ) -> None:
         server = bridge.build_server(stub, allow_trading=True, require_stops=False)
+        before = stub.account()["margin"]
         _payload(server, "mt5_order_send", symbol="USDJPY", side="buy", volume=0.1)
         position = [p for p in stub.positions("USDJPY", None)][0]
         # The spread costs 14 points: ~1 USD, versus ~140 if yen leaked in.
         assert abs(position["profit"]) < 5.0
-        assert stub.account()["margin"] >= 100.0
+        # 0.1 lot = 10,000 USD of base currency at leverage 100.
+        assert stub.account()["margin"] - before == pytest.approx(100.0)
