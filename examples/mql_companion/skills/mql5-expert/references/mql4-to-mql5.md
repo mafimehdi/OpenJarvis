@@ -7,7 +7,8 @@ The three structural changes that produce ~80% of the work:
 2. **Trading API → request structs.** `OrderSend()` takes one
    `MqlTradeRequest` (or use `CTrade` from `<Trade\Trade.mqh>`).
 3. **Predefined variables → symbol info calls.** `Ask`, `Bid`, `Point`,
-   `Digits`, `Bars`, `Volume` do not exist as MQL4-style globals.
+   `Digits`, `Bars`, `Volume` do not exist as MQL4-style globals. (`Point()`
+   and `Digits()` do exist as *functions* — `Point()` is just `_Point`.)
 
 ## Direct replacements
 
@@ -32,7 +33,7 @@ The three structural changes that produce ~80% of the work:
 | `OrderClose(ticket, lots, price, slippage)` | `trade.PositionClose(ticket)` / `PositionClosePartial(ticket, volume)` |
 | `OrderModify(ticket, price, sl, tp, expiry)` | `trade.PositionModify(ticket, sl, tp)` (positions) / `trade.OrderModify(...)` (pending orders) |
 | `OrderDelete(ticket)` | `trade.OrderDelete(ticket)` — pending orders only |
-| `OrderSelect(i, SELECT_BY_POS)` + `OrderType()` | `PositionGetTicket(i)` + `PositionGetInteger(POSITION_TYPE)` |
+| `OrderSelect(i, SELECT_BY_POS)` + `OrderType()` | `PositionGetTicket(i)` + `PositionGetInteger(POSITION_TYPE)`. MQL5 does have `OrderSelect(ticket)`, but it selects a *pending order* (then `OrderGetInteger/Double/String`) — not a position |
 | `OrdersTotal()` = open positions + pending orders | `PositionsTotal()` = open positions, `OrdersTotal()` = **pending orders only** |
 | `OrderMagicNumber()`, `OrderLots()`, `OrderProfit()` | `PositionGetInteger(POSITION_MAGIC)`, `PositionGetDouble(POSITION_VOLUME)`, `PositionGetDouble(POSITION_PROFIT)` |
 | `OP_BUY` / `OP_SELL` / `OP_BUYLIMIT` | `ORDER_TYPE_BUY` / `ORDER_TYPE_SELL` / `ORDER_TYPE_BUY_LIMIT` |

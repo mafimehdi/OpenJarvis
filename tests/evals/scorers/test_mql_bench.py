@@ -416,3 +416,57 @@ class TestStripPreservesOffsets:
         stripped = strip_comments_and_strings(code)
         hits = find_mql4_isms(stripped)
         assert [h["match"] for h in hits] == ["Bid"]
+
+
+class TestMql5NamesThatLookLikeMql4:
+    """Names MQL5 itself defines must not be scored as MQL4 contamination.
+
+    ``bool OrderSelect(ulong ticket)``, ``double Point()`` and ``int Digits()``
+    are all in the MQL5 reference (mql5.com/en/docs/trading/orderselect,
+    /check/point, /check/digits). A hit fails the whole sample, so flagging them
+    zeroes a correct answer.
+    """
+
+    @staticmethod
+    def _labels(source: str) -> str:
+        code = strip_comments_and_strings(source)
+        return " | ".join(hit["label"] for hit in find_mql4_isms(code))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "if(OrderSelect(ticket)) { double p = OrderGetDouble(ORDER_PRICE_OPEN); }",
+            "if(OrderSelect(OrderGetTicket(i))) {}",
+            "if(OrderSelect(TicketOf(a, b))) {}",
+            "if(OrderSelect ( ticket )) {}",
+            "double p = Point(); int d = Digits();",
+            "double p = Point (); int d = Digits ();",
+            "int n = Bars (_Symbol, _Period);",
+        ],
+    )
+    def test_the_mql5_forms_are_clean(self, source: str) -> None:
+        assert self._labels(source) == ""
+
+    @pytest.mark.parametrize(
+        "source,needle",
+        [
+            ("if(OrderSelect(0, SELECT_BY_POS)) {}", "OrderSelect(index"),
+            ("if(OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) {}", "OrderSelect(index"),
+            (
+                "if(OrderSelect(MathMax(a, b), SELECT_BY_TICKET)) {}",
+                "OrderSelect(index",
+            ),
+            ("if(OrderSelect ( i , SELECT_BY_POS )) {}", "OrderSelect(index"),
+            ("double x = Point * 10;", "Point/Digits"),
+            ("double x = NormalizeDouble(p, Digits);", "Point/Digits"),
+            ("int n = Bars;", "Bars"),
+        ],
+    )
+    def test_the_mql4_forms_still_are(self, source: str, needle: str) -> None:
+        assert needle in self._labels(source)
+
+    def test_a_ticket_select_is_not_a_reason_to_fail_a_sample(self) -> None:
+        code = strip_comments_and_strings(
+            "void F(ulong t) { if(OrderSelect(t)) Print(OrderGetInteger(ORDER_TYPE)); }"
+        )
+        assert find_mql4_isms(code) == []

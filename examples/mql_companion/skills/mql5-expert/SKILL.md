@@ -61,8 +61,10 @@ Check, in this order, and report findings with line references:
    per signal? Are SL/TP always set (a position without a stop is the most
    expensive bug in this domain)?
 2. **MQL4-isms in MQL5 code** — see `references/mql4-to-mql5.md`. Bare
-   `Ask`/`Bid`/`Point`/`Digits`, `OrderSend` with the MQL4 argument list,
-   `OrderClose`/`OrderModify`/`OrderSelect`, `AccountBalance()`,
+   `Ask`/`Bid`/`Point`/`Digits` as variables (`Point()`/`Digits()` are real
+   MQL5 functions), `OrderSend` with the MQL4 argument list,
+   `OrderClose`/`OrderModify`/`OrderSelect(i, SELECT_BY_POS)` (MQL5's own
+   `OrderSelect(ticket)` reads a pending order and is fine), `AccountBalance()`,
    `MarketInfo()`, `Time[0]`/`Close[1]` series arrays.
 3. **Indicator handle hygiene** — handles created once in `OnInit`, checked
    against `INVALID_HANDLE`, released in `OnDeinit`, and every `CopyBuffer`
@@ -94,7 +96,7 @@ Check, in this order, and report findings with line references:
 
 Follow `references/mql4-to-mql5.md` as a checklist. The three structural
 changes that account for most of the work: orders become positions
-(`OrderSelect` → `PositionSelect`/`PositionGetTicket`), the trading API becomes
+(`OrderSelect(i, SELECT_BY_POS)` → `PositionSelect`/`PositionGetTicket`), the trading API becomes
 `MqlTradeRequest`/`CTrade`, and predefined price variables become
 `SymbolInfoDouble` calls.
 

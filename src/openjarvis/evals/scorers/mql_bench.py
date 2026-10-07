@@ -9,7 +9,9 @@ three things, in decreasing order of signal:
    input validation, ...). Checks are literal substrings, or regexes when
    prefixed with ``re:``.
 2. **MQL4 contamination** (22%/20% weight) — bare ``Ask``/``Bid``/``Point``/
-   ``Digits``, ``OrderClose``/``OrderSelect``/``OrderModify``, the eleven-argument
+   ``Digits`` (the variables; ``Point()``/``Digits()`` are real MQL5 functions),
+   ``OrderClose``/``OrderModify``, ``OrderSelect(index, SELECT_BY_POS)`` (MQL5's
+   own ``OrderSelect(ticket)`` is fine), the eleven-argument
    ``OrderSend``, ``AccountBalance()``, ``MarketInfo()``, ``OP_BUY``, ``Close[1]``
    series arrays, ``IsTradeAllowed()``. Each hit costs a third of this component;
    any hit also fails the sample outright. This is the failure mode that makes a
@@ -60,11 +62,14 @@ MQL4_ISM_PATTERNS: List[Tuple[str, str]] = [
     ),
     (
         "predefined Point/Digits (use _Point/_Digits)",
-        r"(?<![.\w_])(Point|Digits)(?![\w_])",
+        # MQL5 does have ``double Point()`` and ``int Digits()`` as functions
+        # (mql5.com/en/docs/check/point, /digits); only the bare MQL4 variable
+        # form is an idiom.
+        r"(?<![.\w_])(Point|Digits)(?![\w_])(?!\s*\()",
     ),
     (
         "predefined Bars variable (use Bars(_Symbol, _Period))",
-        r"(?<![.\w_])Bars(?![\w_(])",
+        r"(?<![.\w_])Bars(?![\w_])(?!\s*\()",
     ),
     (
         "MQL4 series array (use iTime/iClose/CopyClose with ArraySetAsSeries)",
@@ -72,10 +77,18 @@ MQL4_ISM_PATTERNS: List[Tuple[str, str]] = [
     ),
     (
         "MQL4 order-pool function (positions and orders are separate in MQL5)",
-        r"(?<![.\w_])(OrderClose|OrderModify|OrderDelete|OrderSelect|OrderType"
+        r"(?<![.\w_])(OrderClose|OrderModify|OrderDelete|OrderType"
         r"|OrderTicket|OrderLots|OrderProfit|OrderMagicNumber|OrderComment"
         r"|OrderSymbol|OrderOpenPrice|OrderClosePrice|OrderStopLoss"
         r"|OrderTakeProfit|OrderOpenTime|OrderCloseTime)\s*\(",
+    ),
+    (
+        "MQL4 OrderSelect(index, SELECT_BY_*) (MQL5's takes a ticket only)",
+        # MQL5 has its own ``bool OrderSelect(ulong ticket)`` for pending orders
+        # (mql5.com/en/docs/trading/orderselect); MQL4's takes an index or a
+        # ticket plus a mode, so a comma at the top level of the argument list
+        # is what gives it away. One level of nested parentheses is understood.
+        r"(?<![.\w_])OrderSelect\s*\((?:[^(),]|\([^()]*\))*,",
     ),
     (
         "MQL4 account function (use AccountInfoDouble/AccountInfoInteger)",

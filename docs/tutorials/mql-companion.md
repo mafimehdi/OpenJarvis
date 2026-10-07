@@ -20,9 +20,9 @@ MQL5 is a low-resource language for LLMs: little of it is on the open web, its A
 
 | MQL4 idiom | What happens in MQL5 |
 |---|---|
-| `Ask`, `Bid`, `Point`, `Digits`, `Bars` | Undeclared identifier — use `SymbolInfoDouble`, `_Point`, `_Digits`, `Bars()` |
+| `Ask`, `Bid`, `Point`, `Digits`, `Bars` (as variables) | Undeclared identifier — use `SymbolInfoDouble`, `_Point`, `_Digits`, `Bars()` (`Point()` and `Digits()` also exist, as functions) |
 | `OrderSend(symbol, cmd, volume, price, ...)` | Wrong arity — MQL5 takes a `MqlTradeRequest` and a result struct, usually via `CTrade` |
-| `OrderClose`, `OrderModify`, `OrderSelect` | Gone — positions are closed by an opposite deal and selected with `PositionSelect` / `PositionGetTicket` |
+| `OrderClose`, `OrderModify`, `OrderSelect(i, SELECT_BY_POS)` | Gone — positions are closed by an opposite deal and selected with `PositionSelect` / `PositionGetTicket`. (MQL5 has its own `OrderSelect(ticket)`, which reads a *pending order*.) |
 | `AccountBalance()`, `MarketInfo()` | Gone — `AccountInfoDouble(ACCOUNT_BALANCE)`, `SymbolInfoDouble` |
 | `Close[1]`, `Time[0]` series arrays | Gone — `iClose(symbol, period, shift)` or `CopyClose` into a buffer |
 | `iMA(...)` returning a value | Returns a *handle*; values come from `CopyBuffer` |

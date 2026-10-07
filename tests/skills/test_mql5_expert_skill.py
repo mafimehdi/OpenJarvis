@@ -406,3 +406,35 @@ class TestTemplateRiskSizing:
         assert "if(tick_value<=0.0)tick_value=" in body
         # ...and the loss figure is what feeds the per-lot loss.
         assert "loss_per_lot=sl_points*point/tick_size*tick_value" in body
+
+
+class TestMql5NamesAreNotCalledGone:
+    """``OrderSelect(ticket)``, ``Point()`` and ``Digits()`` exist in MQL5.
+
+    The review checklist feeds an LLM, so telling it they are MQL4-isms makes it
+    flag correct code. The MQL4 *forms* are what is gone: ``OrderSelect(index,
+    SELECT_BY_POS)`` and the bare ``Point``/``Digits`` variables.
+    """
+
+    FILES = (
+        SKILL_DIR / "SKILL.md",
+        SKILL_DIR / "skill.toml",
+        SKILL_DIR / "references" / "mql4-to-mql5.md",
+        REPO_ROOT / "docs" / "tutorials" / "mql-companion.md",
+    )
+
+    @pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)
+    def test_orderselect_is_qualified(self, path: Path) -> None:
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        assert "OrderSelect" in text
+        assert "SELECT_BY_POS" in text, f"{path.name}: which OrderSelect is gone?"
+
+    @pytest.mark.parametrize("path", FILES[:1] + FILES[2:], ids=lambda p: p.name)
+    def test_point_and_digits_functions_are_acknowledged(self, path: Path) -> None:
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        assert "Point()" in text and "Digits()" in text, path.name
+
+    def test_the_review_checklist_names_both_exceptions(self) -> None:
+        text = (SKILL_DIR / "skill.toml").read_text(encoding="utf-8")
+        assert "Point() and Digits() are real MQL5 functions" in text
+        assert "single ticket argument" in text
