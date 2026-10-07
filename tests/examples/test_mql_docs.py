@@ -1051,6 +1051,7 @@ REAL_RUNTIME_ERRORS = frozenset(
         "ERR_TRADE_SEND_FAILED",  # 4756
         "ERR_TRADE_CALC_FAILED",  # 4758
         "ERR_MARKET_NOT_SELECTED",  # 4302
+        "ERR_FUNCTION_NOT_ALLOWED",  # 4014
         "ERR_INDICATOR_DATA_NOT_FOUND",  # 4806
     }
 )
@@ -1546,6 +1547,7 @@ VENDOR_RUNTIME_ERRORS: Dict[str, Tuple[int, str]] = {
     "ERR_TRADE_POSITION_NOT_FOUND": (4753, "Position not found"),
     "ERR_TRADE_SEND_FAILED": (4756, "Trade request sending failed"),
     "ERR_MARKET_NOT_SELECTED": (4302, "Symbol is not selected in MarketWatch"),
+    "ERR_FUNCTION_NOT_ALLOWED": (4014, "Function is not allowed for call"),
     "ERR_INDICATOR_DATA_NOT_FOUND": (4806, "Requested data not found"),
 }
 
@@ -1976,3 +1978,43 @@ class TestTimeClocks:
         lines = COMPILE_ERRORS.read_text(encoding="utf-8").splitlines()
         row = next(r for r in lines if r.startswith("| Tester vs live"))
         assert "TimeGMT()" in row and "TimeLocal()" in row
+
+
+class TestCalendarInTheTester:
+    """The divergence row said news-calendar lookups "cannot be reproduced" and
+    stopped there. The reference book says more: every calendar call fails in
+    the tester with FUNCTION_NOT_ALLOWED (4014), and what the EA does with that
+    failure decides whether the backtest has no news filter or never trades.
+    The row now names the error and the cheatsheet gives the documented
+    workaround and the DST caveat for recorded times.
+    """
+
+    def _section(self) -> str:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("### News filters do not run in the tester")
+        return _flat(text[start : text.index("\nNew-bar guard", start)])
+
+    def test_the_divergence_row_points_at_4014(self) -> None:
+        lines = COMPILE_ERRORS.read_text(encoding="utf-8").splitlines()
+        row = next(r for r in lines if r.startswith("| Tester vs live"))
+        assert "4014" in row and "cannot reproduce them" not in row
+
+    def test_the_runtime_table_explains_both_misreadings(self) -> None:
+        lines = COMPILE_ERRORS.read_text(encoding="utf-8").splitlines()
+        row = " ".join(
+            next(
+                r for r in lines if r.startswith("| `ERR_FUNCTION_NOT_ALLOWED`")
+            ).split()
+        )
+        assert 'reads the failure as "no news" backtests with no news filter' in row
+        assert 'reads it as "news now" never trades' in row
+        assert "online chart" in row
+
+    def test_the_cheatsheet_gives_the_workaround_and_the_dst_caveat(self) -> None:
+        text = self._section()
+        assert "fails with ERR_FUNCTION_NOT_ALLOWED (4014)" in text
+        assert "save the calendar records to files" in text
+        assert (
+            "trade-server time (TimeTradeServer(), with its time zone and DST)" in text
+        )
+        assert "turns the news filter off for the whole run" in text

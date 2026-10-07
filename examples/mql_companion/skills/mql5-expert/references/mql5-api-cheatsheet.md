@@ -318,6 +318,21 @@ constant that looks like a city.
 is shifted by the broker's offset in a backtest, and the two results cannot be
 compared; `TimeCurrent()` is the only one that means the same thing in both.
 
+### News filters do not run in the tester
+
+The economic-calendar functions (`CalendarValueHistory`, `CalendarValueLast`,
+`CalendarEventById`, ...) cannot be used in the tester: any call fails with
+`ERR_FUNCTION_NOT_ALLOWED` (4014). The MQL5 book's advice is to save the calendar
+records to files while the program runs on a live chart, then load and read them
+in the tester (mql5.com/en/book/advanced/calendar). Two consequences for an EA:
+
+* Decide what a failed call means *before* backtesting. Treating it as "no
+  news" turns the news filter off for the whole run; treating it as "news now"
+  blocks every trade; neither is the strategy you meant to test.
+* Calendar times are trade-server time (`TimeTradeServer()`, with its time zone
+  and DST), so a file of historic events has to be shifted for the stretches of
+  the year where the DST state differs from the one that recorded it.
+
 New-bar guard (do not trade every tick in a bar strategy):
 
 ```mql5
