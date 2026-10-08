@@ -61,6 +61,10 @@ double MinStopDistance()
    return(stops > 0 ? (double)stops * point : 0.0);
   }
 
+//--- Rounds DOWN to the lot step. Returns 0.0 when the result is below the
+//--- minimum lot: bumping it up to SYMBOL_VOLUME_MIN would silently risk more
+//--- than InpRiskPercent (a $100 account at 1% risk, a 300-point stop and about
+//--- $1 per point per lot wants 0.003 lots; the minimum 0.01 risks 3%).
 double NormalizeVolume(double volume)
   {
    const double min_lot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -73,7 +77,7 @@ double NormalizeVolume(double volume)
    double lots = MathFloor(volume / lot_step + 1e-8) * lot_step;
    lots = NormalizeDouble(lots, g_volume_digits);
    if(lots < min_lot)
-      lots = min_lot;
+      return(0.0);
    if(max_lot > 0.0 && lots > max_lot)
       lots = max_lot;
    return(lots);
@@ -259,6 +263,11 @@ void OpenPosition(const ENUM_ORDER_TYPE type)
      }
    if(lots > room)
       lots = NormalizeVolume(room);
+   if(lots <= 0.0)
+     {
+      Print("Volume below the minimum lot at this risk - skipping entry");
+      return;
+     }
    double sl = 0.0;
    double tp = 0.0;
    if(type == ORDER_TYPE_BUY)

@@ -188,6 +188,11 @@ double lots = MathFloor(volume / lot_step + 1e-8) * lot_step;   // epsilon is no
 exact `0.3` into `0.2` — and with a 0.01 step, 61 of the first 500 exact lot
 sizes lose a step the same way.
 
+When the rounded size is below `SYMBOL_VOLUME_MIN`, skip the trade instead of
+raising it to the minimum: a risk-percent EA that does so risks more than its
+input says (the template's `NormalizeVolume` returns 0.0 and `OpenPosition`
+skips).
+
 `SetTypeFillingBySymbol` reads `SYMBOL_FILLING_MODE` for you, and the reference
 documents the tie-break: when a symbol allows both `SYMBOL_FILLING_FOK` and
 `SYMBOL_FILLING_IOC`, it sets **`ORDER_FILLING_FOK`** — all-or-nothing, so no

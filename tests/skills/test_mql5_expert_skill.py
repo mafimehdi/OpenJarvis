@@ -523,6 +523,45 @@ class TestTemplateVolumeLimit:
         assert "Print();return;}if(lots>room)" in body
 
 
+class TestTemplateNeverRisksMoreThanTheInput:
+    """Rounding the risk-sized volume UP to ``SYMBOL_VOLUME_MIN`` makes a
+    risk-percent EA risk more than ``InpRiskPercent`` whenever the minimum lot
+    is already too big for the stop: a $100 account, 1% risk, a 300-point stop
+    at about $1 per point per lot wants 0.003 lots and the 0.01 minimum risks
+    3%. ``NormalizeVolume`` now returns 0.0 below the minimum and
+    ``OpenPosition`` skips the entry.
+    """
+
+    def test_below_the_minimum_lot_is_zero_not_the_minimum(
+        self, template_code: str
+    ) -> None:
+        body = _squash(_function_body(template_code, "NormalizeVolume"))
+        assert "if(lots<min_lot)return(0.0);" in body
+        assert "lots=min_lot" not in body
+
+    def test_open_position_skips_a_zero_volume(self, template_code: str) -> None:
+        body = _squash(_function_body(template_code, "OpenPosition"))
+        cap = body.index("lots=NormalizeVolume(room);")
+        zero = body.index("if(lots<=0.0)")
+        margin = body.index("MarginIsSufficient(")
+        assert cap < zero < margin
+        assert "if(lots<=0.0){Print();return;}" in body
+
+    def test_the_example_in_the_comment_is_arithmetically_true(self) -> None:
+        equity, risk_pct, sl_points, per_point_per_lot = 100.0, 1.0, 300.0, 1.0
+        wanted = equity * risk_pct / 100 / (sl_points * per_point_per_lot)
+        assert round(wanted, 3) == 0.003
+        assert 0.01 * sl_points * per_point_per_lot / equity * 100 == 3.0
+
+    def test_cheatsheet_says_skip_not_raise(self) -> None:
+        cheat = " ".join(
+            (SKILL_DIR / "references" / "mql5-api-cheatsheet.md")
+            .read_text("utf-8")
+            .split()
+        )
+        assert "skip the trade instead of raising it to the minimum" in cheat
+
+
 class TestMql5NamesAreNotCalledGone:
     """``OrderSelect(ticket)``, ``Point()`` and ``Digits()`` exist in MQL5.
 
