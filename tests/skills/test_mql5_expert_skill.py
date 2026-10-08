@@ -474,6 +474,55 @@ class TestTemplateVolumeDigits:
         assert body.startswith("{if(step<=0.0)return(2);")
 
 
+class TestTemplateVolumeLimit:
+    """``SYMBOL_VOLUME_LIMIT`` is the most volume of open positions plus pending
+    orders allowed in ONE direction for the symbol (MQL5 Reference, "Symbol
+    Properties": with a 5 lot limit a 5 lot buy position and a 5 lot sell limit
+    can coexist, a buy limit cannot). The template read the minimum and maximum
+    lot but never this, so on a server that sets it the entry would be refused
+    after the stop and margin checks had passed.
+    """
+
+    def test_room_counts_positions_and_pending_orders_in_one_direction(
+        self, template_code: str
+    ) -> None:
+        body = _squash(_function_body(template_code, "VolumeRoomFor"))
+        assert "SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_LIMIT)" in body
+        assert "if(limit<=0.0)return(DBL_MAX);" in body
+        assert "POSITION_VOLUME" in body
+        assert "ORDER_VOLUME_CURRENT" in body
+        # per symbol, not per magic number: the limit is the server's
+        assert "POSITION_MAGIC" not in body
+        assert "ORDER_MAGIC" not in body
+        for kind in (
+            "ORDER_TYPE_BUY_LIMIT",
+            "ORDER_TYPE_BUY_STOP",
+            "ORDER_TYPE_BUY_STOP_LIMIT",
+            "ORDER_TYPE_SELL_LIMIT",
+            "ORDER_TYPE_SELL_STOP",
+            "ORDER_TYPE_SELL_STOP_LIMIT",
+        ):
+            assert kind + "|" in body or kind + ")" in body, kind
+        assert "return(MathMax(0.0,limit-used));" in body
+
+    def test_positions_are_split_by_direction(self, template_code: str) -> None:
+        body = _squash(_function_body(template_code, "VolumeRoomFor"))
+        assert "is_buy==want_buy" in body
+        assert "want_buy?pending_buy:pending_sell" in body
+
+    def test_open_position_caps_or_skips_before_the_margin_check(
+        self, template_code: str
+    ) -> None:
+        body = _squash(_function_body(template_code, "OpenPosition"))
+        room = body.index("room=VolumeRoomFor(type)")
+        skip = body.index("if(room<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN))")
+        cap = body.index("if(lots>room)lots=NormalizeVolume(room);")
+        margin = body.index("MarginIsSufficient(")
+        assert room < skip < cap < margin
+        # a skip must leave without trading (string literals are stripped here)
+        assert "Print();return;}if(lots>room)" in body
+
+
 class TestMql5NamesAreNotCalledGone:
     """``OrderSelect(ticket)``, ``Point()`` and ``Digits()`` exist in MQL5.
 

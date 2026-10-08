@@ -79,6 +79,46 @@ double NormalizeVolume(double volume)
    return(lots);
   }
 
+//--- SYMBOL_VOLUME_LIMIT caps the open volume PLUS the pending orders in ONE
+//--- direction, per symbol - whichever EA or magic number holds them (MQL5
+//--- Reference, "Symbol Properties"). Returns the volume still allowed in the
+//--- direction of `type`; DBL_MAX when the server sets no limit (value 0).
+double VolumeRoomFor(const ENUM_ORDER_TYPE type)
+  {
+   const double limit = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_LIMIT);
+   if(limit <= 0.0)
+      return(DBL_MAX);
+   const bool want_buy = (type == ORDER_TYPE_BUY);
+   double used = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(PositionGetTicket(i) == 0)
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      const bool is_buy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      if(is_buy == want_buy)
+         used += PositionGetDouble(POSITION_VOLUME);
+     }
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(OrderGetTicket(i) == 0)
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol)
+         continue;
+      const long kind = OrderGetInteger(ORDER_TYPE);
+      const bool pending_buy  = (kind == ORDER_TYPE_BUY_LIMIT ||
+                                 kind == ORDER_TYPE_BUY_STOP ||
+                                 kind == ORDER_TYPE_BUY_STOP_LIMIT);
+      const bool pending_sell = (kind == ORDER_TYPE_SELL_LIMIT ||
+                                 kind == ORDER_TYPE_SELL_STOP ||
+                                 kind == ORDER_TYPE_SELL_STOP_LIMIT);
+      if(want_buy ? pending_buy : pending_sell)
+         used += OrderGetDouble(ORDER_VOLUME_CURRENT);
+     }
+   return(MathMax(0.0, limit - used));
+  }
+
 //--- fixed-fractional sizing: risk InpRiskPercent of equity over sl_points
 double RiskVolume(const double sl_points)
   {
@@ -210,7 +250,15 @@ void OpenPosition(const ENUM_ORDER_TYPE type)
                   ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                   : SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   const double lots = RiskVolume(sl_points);
+   double lots = RiskVolume(sl_points);
+   const double room = VolumeRoomFor(type);
+   if(room < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
+     {
+      Print("SYMBOL_VOLUME_LIMIT reached in this direction - skipping entry");
+      return;
+     }
+   if(lots > room)
+      lots = NormalizeVolume(room);
    double sl = 0.0;
    double tp = 0.0;
    if(type == ORDER_TYPE_BUY)
