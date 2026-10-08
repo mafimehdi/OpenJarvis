@@ -331,6 +331,9 @@ The economic-calendar functions (`CalendarValueHistory`, `CalendarValueLast`,
 records to files while the program runs on a live chart, then load and read them
 in the tester (mql5.com/en/book/advanced/calendar). Two consequences for an EA:
 
+* Record to `FILE_COMMON`. A file the live program writes to its own
+  `MQL5\Files` is not in the tester agent's `MQL5\Files`, so the tester would
+  find no calendar at all (see "What else the Strategy Tester changes").
 * Decide what a failed call means *before* backtesting. Treating it as "no
   news" turns the news filter off for the whole run; treating it as "news now"
   blocks every trade; neither is the strategy you meant to test.
@@ -349,11 +352,13 @@ From MT5 Help, "Testing Features"
 | The spread moves with the market | Not modelled: it is read from the history, the last known spread is used when the history value is zero or less, and it is always floating |
 | Graphical objects exist | Not plotted in a non-visual test or an optimization, so reading an object's properties returns zero (visual mode is exempt) |
 | `GlobalVariable*` shares the terminal's list (F3) | Emulated: separate from the terminal's variables, and each testing agent has its own copy |
+| A file written with `FileOpen` lands in the terminal's `MQL5\Files` | Lands in the testing agent's own `MQL5\Files`; only `FILE_COMMON` reaches the shared folder |
+| `Print()` and trade messages reach the journal | Not recorded on a **remote** agent, which keeps a minimum of log lines; DLL calls are forbidden there (on a local agent they need "Allow import DLL") |
 | Market Watch holds what you selected | Only the tested symbol at the start. Another symbol is connected on first access and the test pauses while its history syncs; each symbol gets its own tick sequence, so a new bar on one says nothing about another |
 
 So a result from "Open prices only" says little about stop slippage, and an EA
-that keeps state in global variables or reads chart objects behaves differently
-under test.
+that keeps state in global variables or files, or reads chart objects, behaves
+differently under test.
 
 New-bar guard (do not trade every tick in a bar strategy):
 
@@ -379,8 +384,13 @@ int fh = FileOpen("state.csv", FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI, ',');
 if(fh != INVALID_HANDLE) { /* FileWrite / FileRead... */ FileClose(fh); }
 ```
 
-Files land in `MQL5\Files` (or `<data folder>\MQL5\Files`) — never outside the
-sandbox unless you pass `FILE_COMMON`.
+On a chart, files land in `MQL5\Files` (or `<data folder>\MQL5\Files`) — never
+outside the sandbox unless you pass `FILE_COMMON`. **In the tester that is a
+different folder:** every file operation of a test happens in the testing
+agent's own `<agent folder>\MQL5\Files`, isolated from the platform and from
+other agents (MT5 Help, "Testing Features"). A state file written on a chart
+is therefore invisible to the same EA under test, and the other way round,
+unless both sides use `FILE_COMMON`, the shared folder of the platforms.
 
 ## Event-driven confirmation
 

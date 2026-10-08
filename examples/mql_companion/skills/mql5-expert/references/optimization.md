@@ -175,7 +175,7 @@ one of them has drifted.
 | `Report`, `ReplaceReport` | Name without extension; `ReplaceReport=1` overwrites |
 | `ShutdownTerminal` | 1 = close MT5 when the run ends (the terminal exits *after* writing the report) |
 | `Deposit`, `Currency`, `Leverage` | Account context |
-| `UseLocal`, `UseRemote`, `UseCloud` | Where passes are computed |
+| `UseLocal`, `UseRemote`, `UseCloud` | Where passes are computed. A remote agent records almost nothing in its log (no `Print()` output, no open/close messages) and runs no DLL calls, so an EA that needs a DLL, or whose diagnosis depends on its printed output, should use local agents (MT5 Help, "Testing Features") |
 | `ProfitInPips` | **Not a display setting.** Calculating profit in pips skips the conversion into the deposit currency — and with it swap and commission — and margin is not controlled. MetaQuotes: "only use it for quick and rough strategy estimation". A report from such a run is not comparable with one from a normal run |
 | `Visual`, `Port` | UI and agent details |
 | `Dates` | Seen in ini files the terminal wrote; not in MetaQuotes' list, so do not rely on it |

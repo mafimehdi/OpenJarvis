@@ -2076,3 +2076,48 @@ class TestWhatElseTheTesterChanges:
         row = next(r for r in lines if r.startswith("| Tester vs live"))
         assert "What else the Strategy Tester changes" in row
         assert "real-tick assumptions" not in row
+
+
+class TestTesterFilesAndRemoteAgents:
+    """The cheatsheet said files land in ``MQL5\\Files`` "unless you pass
+    FILE_COMMON". MT5 Help says that during a test every file operation happens
+    in the *agent's* own ``MQL5\\Files``, isolated from the platform. That made
+    the calendar workaround added in round 34 wrong as written: a file the live
+    program writes to its own folder is not where the tester agent looks, so the
+    recorded calendar would never be found. The workaround now says to use
+    ``FILE_COMMON``, and the tester table and the optimization page carry the
+    related agent facts (remote agents log almost nothing and run no DLLs).
+    """
+
+    def _cheat(self) -> str:
+        return _flat(CHEATSHEET.read_text(encoding="utf-8"))
+
+    def test_the_files_paragraph_separates_chart_from_tester(self) -> None:
+        text = self._cheat()
+        assert "In the tester that is a different folder" in text
+        assert "the testing agent's own <agent folder>\\MQL5\\Files" in text
+        assert "unless both sides use FILE_COMMON" in text
+
+    def test_the_calendar_workaround_records_to_the_shared_folder(self) -> None:
+        text = self._cheat()
+        start = text.index("News filters do not run in the tester")
+        section = text[start : text.index("What else the Strategy Tester changes")]
+        assert "Record to FILE_COMMON" in section
+        assert "the tester would find no calendar at all" in section
+
+    def test_the_tester_table_has_the_file_and_remote_rows(self) -> None:
+        text = self._cheat()
+        assert "Lands in the testing agent's own MQL5\\Files" in text
+        assert "only FILE_COMMON reaches the shared folder" in text
+        assert "Not recorded on a remote agent" in text
+        assert "DLL calls are forbidden there" in text
+        assert "Allow import DLL" in text
+
+    def test_the_conclusion_names_files_as_well_as_globals(self) -> None:
+        assert "keeps state in global variables or files" in self._cheat()
+
+    def test_the_optimization_page_warns_about_remote_agents(self) -> None:
+        text = _flat(OPTIMIZATION_REFERENCE.read_text(encoding="utf-8"))
+        assert "A remote agent records almost nothing in its log" in text
+        assert "no DLL calls" in text
+        assert "should use local agents" in text
