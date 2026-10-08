@@ -1052,6 +1052,10 @@ REAL_RUNTIME_ERRORS = frozenset(
         "ERR_TRADE_CALC_FAILED",  # 4758
         "ERR_MARKET_NOT_SELECTED",  # 4302
         "ERR_FUNCTION_NOT_ALLOWED",  # 4014
+        "ERR_NOTIFICATION_SEND_FAILED",  # 4515
+        "ERR_NOTIFICATION_WRONG_PARAMETER",  # 4516
+        "ERR_NOTIFICATION_WRONG_SETTINGS",  # 4517
+        "ERR_NOTIFICATION_TOO_FREQUENT",  # 4518
         "ERR_INDICATOR_DATA_NOT_FOUND",  # 4806
     }
 )
@@ -2170,3 +2174,47 @@ class TestTesterModesLimits:
     def test_the_template_input_example_is_named(self) -> None:
         text = self._section()
         assert "an input such as a signal timeframe can make" in text
+
+
+class TestAlertsWithoutTradingView:
+    """A user without a TradingView plan asked about Pine alerts. MQL5 raises
+    the same signal inside the terminal (``Alert``, ``SendNotification``,
+    ``SendMail``); the MQL5 Reference says none of them runs in the tester, and
+    gives ``SendNotification`` strict limits."""
+
+    def _section(self) -> str:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("## Alerts and notifications")
+        return _flat(text[start : text.index("\n## Logging and state", start)])
+
+    def test_names_the_three_alert_functions(self) -> None:
+        text = self._section()
+        for name in ("Alert(...)", "SendNotification(text)", "SendMail(subject, text)"):
+            assert name in text
+
+    def test_notification_limits_match_the_reference(self) -> None:
+        text = self._section()
+        assert "255 characters" in text
+        assert "at most 2 calls a second and 10 a minute" in text
+        for code in ("4515", "4516", "4517", "4518"):
+            assert code in text
+
+    def test_permission_checks_are_named(self) -> None:
+        text = self._section()
+        assert "TERMINAL_NOTIFICATIONS_ENABLED" in text
+        assert "TERMINAL_EMAIL_ENABLED" in text
+
+    def test_webhook_needs_webrequest_and_a_paid_plan(self) -> None:
+        text = self._section()
+        assert "needs a paid TradingView plan" in text
+        assert "WebRequest() , which needs the URL" in text.replace(
+            "WebRequest()", "WebRequest() "
+        )
+
+    def test_tester_table_lists_the_outside_world_functions(self) -> None:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("### What else the Strategy Tester changes")
+        flat = _flat(text[start : text.index("\nNew-bar guard", start)])
+        for name in ("Alert()", "SendNotification()", "SendMail()", "WebRequest()"):
+            assert name in flat
+        assert "Not executed at all" in flat

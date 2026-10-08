@@ -357,6 +357,7 @@ Generated Ticks" (.../tick_generation):
 | Any timeframe can be read | **"Open prices only"**: nothing below the test timeframe, and a higher one must be a multiple of it (test on M20: H1 yes, M30 no); the same limit applies per symbol, set by the first timeframe it accesses. The random-delay mode cannot be used |
 | A file written with `FileOpen` lands in the terminal's `MQL5\Files` | Lands in the testing agent's own `MQL5\Files`; only `FILE_COMMON` reaches the shared folder |
 | `Print()` and trade messages reach the journal | Not recorded on a **remote** agent, which keeps a minimum of log lines; DLL calls are forbidden there (on a local agent they need "Allow import DLL") |
+| `Alert()`, `SendNotification()`, `SendMail()`, `PlaySound()`, `MessageBox()`, `SendFTP()` and `WebRequest()` reach the outside world | Not executed at all (MQL5 Reference, "Testing Trading Strategies"). A test that has to prove an alert fires cannot do it; log the condition with `Print()` instead |
 | Market Watch holds what you selected | Only the tested symbol at the start. Another symbol is connected on first access and the test pauses while its history syncs; each symbol gets its own tick sequence, so a new bar on one says nothing about another |
 
 So an input such as a signal timeframe can make an "Open prices only" run fail on
@@ -376,6 +377,49 @@ bool IsNewBar()
    return(true);
   }
 ```
+
+## Alerts and notifications (what replaces a TradingView alert)
+
+A Pine `alert()` or `alertcondition()` needs TradingView's servers to watch the
+chart. An MQL5 program watches the chart inside the terminal, so the same
+signal can raise an alert without any TradingView plan. From the MQL5
+Reference:
+
+| Function | What it does | Limits |
+|---|---|---|
+| `Alert(...)` | Opens a message window in the terminal | Up to 64 arguments; arrays must be printed element by element |
+| `SendNotification(text)` | Push message to the phone: the MetaQuotes ID goes in the terminal's "Notifications" tab | 255 characters; at most 2 calls a second and 10 a minute, and the function can be disabled for breaking that. Errors: 4515 `ERR_NOTIFICATION_SEND_FAILED`, 4516 `ERR_NOTIFICATION_WRONG_PARAMETER`, 4517 `ERR_NOTIFICATION_WRONG_SETTINGS`, 4518 `ERR_NOTIFICATION_TOO_FREQUENT` |
+| `SendMail(subject, text)` | Email to the address in the "Email" tab | Returns true once the mail is queued; sending can be prohibited in settings or the address left empty |
+
+```mql5
+// Alert once per closed bar, the way a Pine alert set to "Once Per Bar Close"
+// behaves: look at the bar that just closed (shift 1), not the forming bar.
+void RaiseSignal(const string text)
+  {
+   Alert(text);
+   if(TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED))
+      if(!SendNotification(text))
+         PrintFormat("SendNotification failed, error %d", GetLastError());
+  }
+
+void OnTick()
+  {
+   if(!IsNewBar()) return;                        // see the new-bar guard above
+   // ...read the indicator buffers at shift 1 here...
+   // if(fast_prev <= slow_prev && fast_now > slow_now) RaiseSignal("BUY cross");
+  }
+```
+
+`TERMINAL_NOTIFICATIONS_ENABLED` (and `TERMINAL_EMAIL_ENABLED` for mail) are what
+the Reference's own examples test before sending. The terminal must be running
+for any of this to fire, so a laptop that sleeps sends nothing; the Reference
+points to a MetaTrader VPS for that. The same program in the tester sends
+nothing (see the table above).
+
+What this does not replace: a TradingView alert can post to a webhook URL, and
+that part needs a paid TradingView plan. Sending the signal from MT5 to another
+service means `WebRequest()`, which needs the URL on the terminal's allowed
+list; it is not executed in the tester either.
 
 ## Logging and state
 
