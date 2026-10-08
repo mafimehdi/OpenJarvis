@@ -2218,3 +2218,62 @@ class TestAlertsWithoutTradingView:
         for name in ("Alert()", "SendNotification()", "SendMail()", "WebRequest()"):
             assert name in flat
         assert "Not executed at all" in flat
+
+
+#: Retcodes the template's pre-flight guards exist to avoid, with the vendor
+#: constant (mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes).
+GUARD_RETCODES = {
+    10034: "LIMIT_VOLUME",  # SYMBOL_VOLUME_LIMIT
+    10040: "LIMIT_POSITIONS",
+    10042: "LONG_ONLY",  # SYMBOL_TRADE_MODE_LONGONLY
+    10043: "SHORT_ONLY",
+    10044: "CLOSE_ONLY",
+    10046: "HEDGE_PROHIBITED",
+}
+
+
+class TestRetcodesForTheTemplateGuards:
+    """Rounds 40 and 42 added guards for ``SYMBOL_VOLUME_LIMIT`` and
+    ``SYMBOL_TRADE_MODE``; the retcode table did not list what the server
+    answers when a guard is skipped, so a model reading a 10042 in a log found
+    nothing. Each row's code and constant are the vendor's."""
+
+    def _rows(self) -> Dict[int, str]:
+        return dict(_skill_retcodes())
+
+    def test_every_guard_retcode_is_listed_with_the_vendor_constant(self) -> None:
+        rows = self._rows()
+        for code, name in GUARD_RETCODES.items():
+            assert rows.get(code) == name, (code, rows.get(code))
+
+    def _row(self, code: int) -> str:
+        text = COMPILE_ERRORS.read_text(encoding="utf-8")
+        return next(
+            line for line in text.splitlines() if line.startswith(f"| {code} |")
+        )
+
+    def test_one_way_rows_name_the_symbol_mode(self) -> None:
+        assert "SYMBOL_TRADE_MODE_LONGONLY" in self._row(10042)
+        assert "SYMBOL_TRADE_MODE_SHORTONLY" in self._row(10043)
+        assert "SYMBOL_TRADE_MODE_CLOSEONLY" in self._row(10044)
+
+    def test_a_long_only_symbol_refuses_the_sell_not_the_buy(self) -> None:
+        # the direction is easy to flip: LONG_ONLY refuses a sell entry
+        assert "A sell entry is refused" in self._row(10042)
+        assert "A buy entry is refused" in self._row(10043)
+
+    def test_volume_limit_row_points_at_the_symbol_property(self) -> None:
+        row = self._row(10034)
+        assert "SYMBOL_VOLUME_LIMIT" in row
+        assert "per direction" in row
+        assert "VolumeRoomFor" in row
+
+    def test_positions_limit_row_keeps_the_netting_hedging_split(self) -> None:
+        row = self._row(10040)
+        assert "netting account only symbols that already have a position" in row
+        assert "hedging account pending orders count too" in row
+
+    def test_hedge_row_says_opposite_positions(self) -> None:
+        row = self._row(10046)
+        assert "forbids opposite positions" in row
+        assert "pending sell" in row

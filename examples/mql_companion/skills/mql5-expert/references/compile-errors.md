@@ -82,6 +82,12 @@ Full list: mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes
 | 10026 | `SERVER_DISABLES_AT` | AutoTrading disabled server-side |
 | 10027 | `CLIENT_DISABLES_AT` | AutoTrading disabled in the terminal |
 | 10030 | `INVALID_FILL` | Wrong filling mode. `SYMBOL_FILLING_MODE` is a flag set: `FOK` = 1, `IOC` = 2 (`BOC` = 4 for limit orders). `RETURN` has no flag; it is refused under Market Execution and is what pending orders use. `CTrade::SetTypeFillingBySymbol()` picks from the flags (FOK first when both are set) |
+| 10034 | `LIMIT_VOLUME` | The volume of orders and positions for the symbol has reached the limit (`SYMBOL_VOLUME_LIMIT`, counted per direction, positions plus pending orders). Reduce the volume or skip; the template's `VolumeRoomFor` checks it first |
+| 10040 | `LIMIT_POSITIONS` | The server caps the number of open positions on the account. On a netting account only symbols that already have a position can take a new order; on a hedging account pending orders count too. Skip the entry; do not retry per tick |
+| 10042 | `LONG_ONLY` | The symbol allows only long positions (`SYMBOL_TRADE_MODE_LONGONLY`). A sell entry is refused: check `SYMBOL_TRADE_MODE` first |
+| 10043 | `SHORT_ONLY` | The symbol allows only short positions (`SYMBOL_TRADE_MODE_SHORTONLY`). A buy entry is refused |
+| 10044 | `CLOSE_ONLY` | The symbol allows only closing positions (`SYMBOL_TRADE_MODE_CLOSEONLY`): no new entry in either direction |
+| 10046 | `HEDGE_PROHIBITED` | The hedging account forbids opposite positions on one symbol: with a Buy open, a Sell or a pending sell is refused |
 
 ## Runtime errors worth guarding
 
