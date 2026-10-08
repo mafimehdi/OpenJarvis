@@ -562,6 +562,62 @@ class TestTemplateNeverRisksMoreThanTheInput:
         assert "skip the trade instead of raising it to the minimum" in cheat
 
 
+class TestTemplateChecksTheSymbolTradeMode:
+    """``SYMBOL_TRADE_MODE`` (DISABLED / LONGONLY / SHORTONLY / CLOSEONLY /
+    FULL) is a per-symbol restriction the terminal and account flags do not
+    cover. The template checked those flags but never the symbol's mode, so on
+    a close-only symbol it passed every filter and the server refused the entry.
+    """
+
+    def test_mode_check_allows_only_full_or_the_matching_one_way_mode(
+        self, template_code: str
+    ) -> None:
+        body = _squash(_function_body(template_code, "SymbolAllowsEntry"))
+        assert "SymbolInfoInteger(_Symbol,SYMBOL_TRADE_MODE)" in body
+        assert "if(mode==SYMBOL_TRADE_MODE_FULL)return(true);" in body
+        assert (
+            "if(mode==SYMBOL_TRADE_MODE_LONGONLY)return(type==ORDER_TYPE_BUY);" in body
+        )
+        assert (
+            "if(mode==SYMBOL_TRADE_MODE_SHORTONLY)return(type==ORDER_TYPE_SELL);"
+            in body
+        )
+        # DISABLED, CLOSEONLY and any unknown value fall through to a refusal
+        assert body.endswith("return(false);}")
+
+    def test_open_position_checks_the_mode_first(self, template_code: str) -> None:
+        body = _squash(_function_body(template_code, "OpenPosition"))
+        assert body.startswith("{if(!SymbolAllowsEntry(type)){Print();return;}")
+
+    def test_the_enum_names_are_the_reference_ones(self, template_code: str) -> None:
+        import re
+
+        real = {
+            "SYMBOL_TRADE_MODE_DISABLED",
+            "SYMBOL_TRADE_MODE_LONGONLY",
+            "SYMBOL_TRADE_MODE_SHORTONLY",
+            "SYMBOL_TRADE_MODE_CLOSEONLY",
+            "SYMBOL_TRADE_MODE_FULL",
+        }
+        used = set(re.findall(r"SYMBOL_TRADE_MODE_[A-Z]+", template_code))
+        assert used and used <= real
+
+    def test_cheatsheet_names_every_mode(self) -> None:
+        cheat = " ".join(
+            (SKILL_DIR / "references" / "mql5-api-cheatsheet.md")
+            .read_text("utf-8")
+            .split()
+        )
+        for name in (
+            "_LONGONLY",
+            "_SHORTONLY",
+            "_CLOSEONLY",
+            "SYMBOL_TRADE_MODE_DISABLED",
+        ):
+            assert name in cheat
+        assert "treat everything but `_FULL` or the matching one-way mode" in cheat
+
+
 class TestMql5NamesAreNotCalledGone:
     """``OrderSelect(ticket)``, ``Point()`` and ``Digits()`` exist in MQL5.
 

@@ -181,6 +181,21 @@ bool TradingIsAllowed()
    return((bool)AccountInfoInteger(ACCOUNT_TRADE_EXPERT));
   }
 
+//--- SYMBOL_TRADE_MODE can refuse a new position outright (DISABLED, CLOSEONLY)
+//--- or in one direction only (LONGONLY, SHORTONLY); TERMINAL_/ACCOUNT_ flags do
+//--- not cover it. Anything but FULL or the matching one-way mode is a refusal.
+bool SymbolAllowsEntry(const ENUM_ORDER_TYPE type)
+  {
+   const long mode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
+   if(mode == SYMBOL_TRADE_MODE_FULL)
+      return(true);
+   if(mode == SYMBOL_TRADE_MODE_LONGONLY)
+      return(type == ORDER_TYPE_BUY);
+   if(mode == SYMBOL_TRADE_MODE_SHORTONLY)
+      return(type == ORDER_TYPE_SELL);
+   return(false);
+  }
+
 bool HasOwnPosition()
   {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -246,6 +261,11 @@ bool MarginIsSufficient(const ENUM_ORDER_TYPE type, const double lots, const dou
 
 void OpenPosition(const ENUM_ORDER_TYPE type)
   {
+   if(!SymbolAllowsEntry(type))
+     {
+      Print("SYMBOL_TRADE_MODE does not allow this entry - skipping");
+      return;
+     }
    const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    const int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    const double sl_points = (double)InpStopLossPoints;

@@ -79,6 +79,12 @@ ENUM_SYMBOL_CALC_MODE calc =
    (ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_CALC_MODE);
 ```
 
+`SYMBOL_TRADE_MODE` limits what a symbol accepts: `SYMBOL_TRADE_MODE_DISABLED`
+(no trading), `_LONGONLY`, `_SHORTONLY`, `_CLOSEONLY` (closing only) or `_FULL`
+(MQL5 Reference, "Symbol Properties"). The terminal and account trade flags do
+not cover it, so check it before opening a position and treat everything but
+`_FULL` or the matching one-way mode as a refusal.
+
 ## Account info
 
 ```mql5
