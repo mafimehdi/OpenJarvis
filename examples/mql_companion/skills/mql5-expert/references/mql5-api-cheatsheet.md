@@ -310,10 +310,15 @@ constant that looks like a city.
 | `TimeCurrent()` | Server time of the tick being handled in `OnTick`; independent of the PC's clock | Simulated from the history |
 | `TimeTradeServer()` | Estimated server time, calculated in the terminal from the PC's time settings | Always equal to `TimeCurrent()` |
 | `TimeLocal()` | The PC's clock | Always equal to `TimeCurrent()` |
-| `TimeGMT()` | GMT calculated from the PC's local time, with the DST switch | Always equal to `TimeTradeServer()` — server time, **not** GMT |
+| `TimeGMT()` | GMT calculated from the PC's local time, with the DST switch | Always equal to `TimeTradeServer()` — the simulated server clock, with no GMT offset removed |
 
 (mql5.com/en/docs/dateandtime/timecurrent, .../timetradeserver, .../timelocal,
-.../timegmt.) In the tester all four are the same server clock. So a
+.../timegmt.) In the tester all four are the same server clock, and MT5 Help
+says the equality is deliberate, so results do not depend on whether a server
+connection exists (metatrader5.com/en/terminal/help/algotrading/testing_features).
+Help's wording is that the server time "always corresponds to the GMT time"; the
+reference defines `TimeGMT()` as `TimeTradeServer()` there, so nothing converts a
+broker's offset away. So a
 "13:00-17:00 GMT" filter written with `TimeGMT()` or `TimeLocal()` works live and
 is shifted by the broker's offset in a backtest, and the two results cannot be
 compared; `TimeCurrent()` is the only one that means the same thing in both.
@@ -332,6 +337,23 @@ in the tester (mql5.com/en/book/advanced/calendar). Two consequences for an EA:
 * Calendar times are trade-server time (`TimeTradeServer()`, with its time zone
   and DST), so a file of historic events has to be shifted for the stretches of
   the year where the DST state differs from the one that recorded it.
+
+### What else the Strategy Tester changes
+
+From MT5 Help, "Testing Features"
+(metatrader5.com/en/terminal/help/algotrading/testing_features):
+
+| Live | In the tester |
+|---|---|
+| A stop, take-profit or pending order fills at the market price when it triggers, so slippage is possible | In the **"Open prices only"** and **"1 minute OHLC"** modes they fill at the price written in the order, with no slippage; only the accurate modes (every tick, real ticks) use the current Bid and Ask. A stop that holds in the cheap modes can slip in the accurate ones |
+| The spread moves with the market | Not modelled: it is read from the history, the last known spread is used when the history value is zero or less, and it is always floating |
+| Graphical objects exist | Not plotted in a non-visual test or an optimization, so reading an object's properties returns zero (visual mode is exempt) |
+| `GlobalVariable*` shares the terminal's list (F3) | Emulated: separate from the terminal's variables, and each testing agent has its own copy |
+| Market Watch holds what you selected | Only the tested symbol at the start. Another symbol is connected on first access and the test pauses while its history syncs; each symbol gets its own tick sequence, so a new bar on one says nothing about another |
+
+So a result from "Open prices only" says little about stop slippage, and an EA
+that keeps state in global variables or reads chart objects behaves differently
+under test.
 
 New-bar guard (do not trade every tick in a bar strategy):
 

@@ -1964,7 +1964,7 @@ class TestTimeClocks:
 
     def test_the_gmt_row_says_it_is_not_gmt_in_the_tester(self) -> None:
         _, tester = _clock_table()["TimeGMT"]
-        assert "server time, **not** GMT" in tester
+        assert "no GMT offset removed" in tester
         live, _ = _clock_table()["TimeGMT"]
         assert "PC's local time" in live
 
@@ -2018,3 +2018,61 @@ class TestCalendarInTheTester:
             "trade-server time (TimeTradeServer(), with its time zone and DST)" in text
         )
         assert "turns the news filter off for the whole run" in text
+
+
+class TestWhatElseTheTesterChanges:
+    """The divergence row said "avoid real-tick assumptions" and SKILL.md said
+    "dependence on tick history that the tester will not reproduce": nothing a
+    reader could act on. MT5 Help's "Testing Features" page lists concrete
+    differences, one of which flatters results: in the "Open prices only" and
+    "1 minute OHLC" modes stops and pending orders fill at the order's own
+    price, so a backtest in those modes shows no slippage at all.
+    """
+
+    def _section(self) -> str:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("### What else the Strategy Tester changes")
+        return _flat(text[start : text.index("\nNew-bar guard", start)])
+
+    def test_fills_in_the_cheap_modes_have_no_slippage(self) -> None:
+        text = self._section()
+        assert 'In the "Open prices only" and "1 minute OHLC" modes' in text
+        assert "fill at the price written in the order, with no slippage" in text
+        assert "only the accurate modes (every tick, real ticks)" in text
+
+    def test_spread_is_read_from_history_and_floats(self) -> None:
+        text = self._section()
+        assert "read from the history" in text
+        assert "last known spread" in text and "always floating" in text
+
+    def test_objects_and_globals_are_emulated(self) -> None:
+        text = self._section()
+        assert "returns zero (visual mode is exempt)" in text
+        assert "each testing agent has its own copy" in text
+
+    def test_other_symbols_pause_the_test_and_get_their_own_ticks(self) -> None:
+        text = self._section()
+        assert "connected on first access" in text
+        assert "its own tick sequence" in text
+
+    def test_the_source_is_cited(self) -> None:
+        text = self._section()
+        assert "algotrading/testing_features" in text
+
+    def test_the_clock_section_cites_the_deliberate_equality(self) -> None:
+        text = _flat(CHEATSHEET.read_text(encoding="utf-8"))
+        assert "the equality is deliberate" in text
+        assert 'server time "always corresponds to the GMT time"' in text
+        assert "nothing converts a broker's offset away" in text
+
+    def test_skill_md_names_the_concrete_differences(self) -> None:
+        text = _flat((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8"))
+        assert "the economic calendar (fails with 4014)" in text
+        assert "chart objects (read as zero)" in text
+        assert "dependence on tick history" not in text
+
+    def test_the_divergence_row_points_at_the_new_section(self) -> None:
+        lines = COMPILE_ERRORS.read_text(encoding="utf-8").splitlines()
+        row = next(r for r in lines if r.startswith("| Tester vs live"))
+        assert "What else the Strategy Tester changes" in row
+        assert "real-tick assumptions" not in row

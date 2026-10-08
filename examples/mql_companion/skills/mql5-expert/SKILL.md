@@ -89,8 +89,11 @@ Check, in this order, and report findings with line references:
    unbounded loops over `PositionsTotal()` while modifying positions (iterate
    backwards).
 7. **Backtest honesty** — flag anything that cannot be tested: martingale/grid
-   recovery without a hard equity stop, `MathSrand`-based logic, dependence on
-   tick history that the tester will not reproduce.
+   recovery without a hard equity stop, `MathSrand`-based logic, and whatever
+   the tester changes — the economic calendar (fails with 4014), `TimeGMT()` and
+   `TimeLocal()` (both just the server clock), chart objects (read as zero),
+   fills in the "Open prices only" and "1 minute OHLC" modes (at the order's own
+   price, so no slippage); see the cheatsheet's tester sections.
 
 ### Porting MQL4 → MQL5
 
