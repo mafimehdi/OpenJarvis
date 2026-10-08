@@ -37,13 +37,16 @@ int      g_volume_digits = 2;
 //+------------------------------------------------------------------+
 //| Helpers                                                          |
 //+------------------------------------------------------------------+
+//--- decimals needed to write the lot step: 0.01 -> 2, 0.25 -> 2, 2.5 -> 1, 10 -> 0.
+//--- Stop when the scaled step is a whole number, not when it reaches 1: that
+//--- would give 0.25 -> 1 digit and round a 0.75 lot to 0.8, off the step grid.
 int VolumeDigits(const double step)
   {
    if(step <= 0.0)
       return(2);
    int digits = 0;
    double s = step;
-   while(s < 1.0 && digits < 8)
+   while(MathAbs(s - MathRound(s)) > 1e-8 && digits < 8)
      {
       s *= 10.0;
       digits++;

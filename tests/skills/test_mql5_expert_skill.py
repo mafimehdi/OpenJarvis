@@ -408,6 +408,72 @@ class TestTemplateRiskSizing:
         assert "loss_per_lot=sl_points*point/tick_size*tick_value" in body
 
 
+class TestTemplateVolumeDigits:
+    """``VolumeDigits`` feeds ``NormalizeDouble(lots, digits)`` in the lot
+    rounding. The old loop stopped when the scaled step reached 1, so a 0.25
+    step gave 1 digit and 0.75 lots became 0.8 -- off the step grid, which the
+    server refuses as an invalid volume. The loop now stops when the scaled
+    step is a whole number.
+
+    The template is MQL5 and nothing here compiles it, so the loop condition is
+    read from the template's own text and evaluated in Python.
+    """
+
+    @staticmethod
+    def _digits(template_code: str, step: float) -> int:
+        import re
+
+        body = _function_body(template_code, "VolumeDigits")
+        cond = re.search(r"while\((.*)\)\s*\{", body)
+        assert cond, "VolumeDigits lost its while loop"
+        expr = (
+            cond.group(1)
+            .replace("MathAbs", "abs")
+            .replace("MathRound", "round")
+            .replace("&&", " and ")
+        )
+        digits, s = 0, step
+        while eval(expr, {"abs": abs, "round": round}, {"s": s, "digits": digits}):
+            s *= 10.0
+            digits += 1
+        return digits
+
+    @pytest.mark.parametrize(
+        ("step", "expected"),
+        [
+            (0.01, 2),
+            (0.1, 1),
+            (0.05, 2),
+            (0.001, 3),
+            (0.07, 2),
+            (1.0, 0),
+            (10.0, 0),
+            (0.25, 2),
+            (0.125, 3),
+            (2.5, 1),
+        ],
+    )
+    def test_digits_needed_to_write_the_step(
+        self, template_code: str, step: float, expected: int
+    ) -> None:
+        assert self._digits(template_code, step) == expected
+
+    def test_a_quarter_lot_step_keeps_a_three_quarter_lot(
+        self, template_code: str
+    ) -> None:
+        digits = self._digits(template_code, 0.25)
+        assert round(0.75, digits) == 0.75
+
+    def test_the_loop_body_scales_by_ten_and_counts(self, template_code: str) -> None:
+        # _digits() hard-codes the body; keep it equal to the template's.
+        body = _squash(_function_body(template_code, "VolumeDigits"))
+        assert "{s*=10.0;digits++;}return(digits);" in body
+
+    def test_the_non_positive_step_fallback_is_kept(self, template_code: str) -> None:
+        body = _squash(_function_body(template_code, "VolumeDigits"))
+        assert body.startswith("{if(step<=0.0)return(2);")
+
+
 class TestMql5NamesAreNotCalledGone:
     """``OrderSelect(ticket)``, ``Point()`` and ``Digits()`` exist in MQL5.
 
