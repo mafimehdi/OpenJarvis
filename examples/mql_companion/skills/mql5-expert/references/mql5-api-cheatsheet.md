@@ -344,21 +344,25 @@ in the tester (mql5.com/en/book/advanced/calendar). Two consequences for an EA:
 ### What else the Strategy Tester changes
 
 From MT5 Help, "Testing Features"
-(metatrader5.com/en/terminal/help/algotrading/testing_features):
+(metatrader5.com/en/terminal/help/algotrading/testing_features) and "Real and
+Generated Ticks" (.../tick_generation):
 
 | Live | In the tester |
 |---|---|
-| A stop, take-profit or pending order fills at the market price when it triggers, so slippage is possible | In the **"Open prices only"** and **"1 minute OHLC"** modes they fill at the price written in the order, with no slippage; only the accurate modes (every tick, real ticks) use the current Bid and Ask. A stop that holds in the cheap modes can slip in the accurate ones |
-| The spread moves with the market | Not modelled: it is read from the history, the last known spread is used when the history value is zero or less, and it is always floating |
+| A stop, take-profit or pending order fills at the market price when it triggers, so slippage is possible | In the **"Open prices only"** and **"1 minute OHLC"** modes they fill at the price written in the order, with no slippage; only the accurate modes (every tick, real ticks) use the current Bid and Ask. A stop that holds in the cheap modes can slip in the accurate ones. "Real and Generated Ticks" adds that in "Open prices only" stops and pending orders "may trigger at a price different from the specified one", especially on higher timeframes |
+| The spread moves with the market | Not modelled: it is read from the history, the last known spread is used when the history value is zero or less, and it is always floating. Generated ticks use the spread fixed in each minute bar; real ticks let it change within the minute |
 | Graphical objects exist | Not plotted in a non-visual test or an optimization, so reading an object's properties returns zero (visual mode is exempt) |
 | `GlobalVariable*` shares the terminal's list (F3) | Emulated: separate from the terminal's variables, and each testing agent has its own copy |
+| `OnTick` runs on every tick | **"Open prices only"**: once per bar, at its open (W1 and MN1 bars are generated once a day). **"1 minute OHLC"**: four times a minute (open, high, low, close) even when the test runs on H1; the prices come from the history |
+| Any timeframe can be read | **"Open prices only"**: nothing below the test timeframe, and a higher one must be a multiple of it (test on M20: H1 yes, M30 no); the same limit applies per symbol, set by the first timeframe it accesses. The random-delay mode cannot be used |
 | A file written with `FileOpen` lands in the terminal's `MQL5\Files` | Lands in the testing agent's own `MQL5\Files`; only `FILE_COMMON` reaches the shared folder |
 | `Print()` and trade messages reach the journal | Not recorded on a **remote** agent, which keeps a minimum of log lines; DLL calls are forbidden there (on a local agent they need "Allow import DLL") |
 | Market Watch holds what you selected | Only the tested symbol at the start. Another symbol is connected on first access and the test pauses while its history syncs; each symbol gets its own tick sequence, so a new bar on one says nothing about another |
 
-So a result from "Open prices only" says little about stop slippage, and an EA
-that keeps state in global variables or files, or reads chart objects, behaves
-differently under test.
+So an input such as a signal timeframe can make an "Open prices only" run fail on
+data the same EA reads fine live, and a result from that mode says little about
+stop slippage. An EA that keeps state in global variables or files, or reads
+chart objects, also behaves differently under test.
 
 New-bar guard (do not trade every tick in a bar strategy):
 

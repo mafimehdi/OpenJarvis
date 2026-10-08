@@ -2121,3 +2121,52 @@ class TestTesterFilesAndRemoteAgents:
         assert "A remote agent records almost nothing in its log" in text
         assert "no DLL calls" in text
         assert "should use local agents" in text
+
+
+class TestTesterModesLimits:
+    """The tester table named the fill rule of the cheap modes but not what they
+    do to the program: in "Open prices only" ``OnTick`` runs once per bar and
+    the EA cannot read a timeframe below the test timeframe, so the template's
+    ``InpTimeframe`` input can make a run fail on data that is fine live.
+    "1 minute OHLC" calls ``OnTick`` four times a minute whatever the test
+    timeframe. Both are on MT5 Help's "Real and Generated Ticks" page, which
+    also says the two modes' stops "may trigger at a price different from the
+    specified one" -- a caveat beside the "no slippage" rule from the other page.
+    """
+
+    def _section(self) -> str:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("### What else the Strategy Tester changes")
+        return _flat(text[start : text.index("\nNew-bar guard", start)])
+
+    def test_open_prices_only_runs_once_per_bar(self) -> None:
+        text = self._section()
+        assert "once per bar, at its open" in text
+        assert "W1 and MN1 bars are generated once a day" in text
+
+    def test_one_minute_ohlc_runs_four_times_a_minute(self) -> None:
+        text = self._section()
+        assert "four times a minute (open, high, low, close)" in text
+        assert "even when the test runs on H1" in text
+
+    def test_lower_timeframes_are_unreadable_in_open_prices_only(self) -> None:
+        text = self._section()
+        assert "nothing below the test timeframe" in text
+        assert "a higher one must be a multiple of it" in text
+        assert "test on M20: H1 yes, M30 no" in text
+        assert "the first timeframe it accesses" in text
+        assert "random-delay mode cannot be used" in text
+
+    def test_the_trigger_caveat_sits_beside_the_fill_rule(self) -> None:
+        text = self._section()
+        assert "may trigger at a price different from the specified one" in text
+        assert "tick_generation" in text
+
+    def test_spread_differs_between_generated_and_real_ticks(self) -> None:
+        text = self._section()
+        assert "Generated ticks use the spread fixed in each minute bar" in text
+        assert "real ticks let it change within the minute" in text
+
+    def test_the_template_input_example_is_named(self) -> None:
+        text = self._section()
+        assert "an input such as a signal timeframe can make" in text
