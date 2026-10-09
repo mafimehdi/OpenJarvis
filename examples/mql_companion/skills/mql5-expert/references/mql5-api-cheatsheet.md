@@ -41,6 +41,22 @@ during an optimization, not to wait for data that is not there yet. Too many
 rejected sets distort a genetic optimization, which assumes the criterion is
 smooth across the input space.
 
+Two more facts from the `OnInit` page of the MQL5 Reference. In the tester,
+`INIT_FAILED` means the test cannot start and the EA is unloaded from the
+agent's memory, then loaded again for the next pass; the page says that costs
+much more time than calling `TesterStop()`. And there is a fourth code,
+`INIT_AGENT_NOT_SUITABLE`: initialization succeeded but this agent should not
+run the test (not enough RAM, no OpenCL support). The agent then receives no
+more tasks until the end of that optimization. The page's own example reads
+`TerminalInfoInteger(TERMINAL_MEMORY_TOTAL)` inside
+`if(MQLInfoInteger(MQL_OPTIMIZATION))` to decide:
+
+```mql5
+if(MQLInfoInteger(MQL_OPTIMIZATION))
+   if(TerminalInfoInteger(TERMINAL_MEMORY_TOTAL) < 2000)    // MB; pick your own floor
+      return(INIT_AGENT_NOT_SUITABLE);
+```
+
 ## Indicators: handles + CopyBuffer
 
 ```mql5
@@ -118,7 +134,9 @@ for(int i = PositionsTotal() - 1; i >= 0; i--)          // backwards if you modi
 
 // by symbol (one call, no loop) — netting accounts:
 if(PositionSelect(_Symbol))
+  {
    double vol = PositionGetDouble(POSITION_VOLUME);
+  }
 ```
 
 `PositionsTotal()` = open positions. `OrdersTotal()` = **pending orders only**.

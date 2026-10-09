@@ -2277,3 +2277,39 @@ class TestRetcodesForTheTemplateGuards:
         row = self._row(10046)
         assert "forbids opposite positions" in row
         assert "pending sell" in row
+
+
+class TestOnInitReturnCodes:
+    """The cheatsheet listed three ``OnInit`` return codes and said nothing of
+    what ``INIT_FAILED`` costs in an optimization or of the fourth code,
+    ``INIT_AGENT_NOT_SUITABLE`` (MQL5 Reference, ``OnInit``)."""
+
+    def _text(self) -> str:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("`OnInit` return values:")
+        return _flat(text[start : text.index("## Indicators", start)])
+
+    def test_init_failed_reloads_the_ea_for_the_next_pass(self) -> None:
+        text = self._text()
+        assert "unloaded from the agent's memory, then loaded again" in text
+        assert "much more time than calling TesterStop()" in text
+
+    def test_the_fourth_code_and_its_consequence(self) -> None:
+        text = self._text()
+        assert "INIT_AGENT_NOT_SUITABLE" in text
+        assert "not enough RAM, no OpenCL support" in text
+        assert "no more tasks until the end of that optimization" in text
+
+    def test_the_example_guards_on_optimization_and_memory(self) -> None:
+        # assert on the code block: the prose names the same identifiers
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("`OnInit` return values:")
+        section = text[start : text.index("## Indicators", start)]
+        block = section.split("```mql5\n", 1)[1].split("```", 1)[0]
+        assert block.splitlines()[0] == "if(MQLInfoInteger(MQL_OPTIMIZATION))"
+        assert "TerminalInfoInteger(TERMINAL_MEMORY_TOTAL) < 2000" in block
+        assert block.rstrip().endswith("return(INIT_AGENT_NOT_SUITABLE);")
+
+    def test_position_select_snippet_uses_a_block(self) -> None:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        assert "if(PositionSelect(_Symbol))\n  {\n   double vol" in text
