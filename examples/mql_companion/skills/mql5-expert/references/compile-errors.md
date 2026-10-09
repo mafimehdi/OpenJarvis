@@ -81,6 +81,7 @@ Full list: mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes
 | 10025 | `NO_CHANGES` | Modify sent identical SL/TP — skip no-op modifications |
 | 10026 | `SERVER_DISABLES_AT` | AutoTrading disabled server-side |
 | 10027 | `CLIENT_DISABLES_AT` | AutoTrading disabled in the terminal |
+| 10029 | `FROZEN` | Order or position frozen: a modification inside `SYMBOL_TRADE_FREEZE_LEVEL` of the activation price (see the trailing-stop section of the cheatsheet). Skip this tick's update; the level may be about to execute anyway |
 | 10030 | `INVALID_FILL` | Wrong filling mode. `SYMBOL_FILLING_MODE` is a flag set: `FOK` = 1, `IOC` = 2 (`BOC` = 4 for limit orders). `RETURN` has no flag; it is refused under Market Execution and is what pending orders use. `CTrade::SetTypeFillingBySymbol()` picks from the flags (FOK first when both are set) |
 | 10034 | `LIMIT_VOLUME` | The volume of orders and positions for the symbol has reached the limit (`SYMBOL_VOLUME_LIMIT`, counted per direction, positions plus pending orders). Reduce the volume or skip; the template's `VolumeRoomFor` checks it first |
 | 10040 | `LIMIT_POSITIONS` | The server caps the number of open positions on the account. On a netting account only symbols that already have a position can take a new order; on a hedging account pending orders count too. Skip the entry; do not retry per tick |

@@ -2223,6 +2223,7 @@ class TestAlertsWithoutTradingView:
 #: Retcodes the template's pre-flight guards exist to avoid, with the vendor
 #: constant (mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes).
 GUARD_RETCODES = {
+    10029: "FROZEN",  # SYMBOL_TRADE_FREEZE_LEVEL
     10034: "LIMIT_VOLUME",  # SYMBOL_VOLUME_LIMIT
     10040: "LIMIT_POSITIONS",
     10042: "LONG_ONLY",  # SYMBOL_TRADE_MODE_LONGONLY
@@ -2347,3 +2348,63 @@ class TestRawOrderSendChecksTheRetcode:
         assert text.index("bool RetcodeIsSuccess(") < text.index(
             "## Trading with a raw request"
         )
+
+
+class TestTrailingStopRespectsTheFreezeLevel:
+    """The trailing-stop snippet checked the stops level of the NEW stop but not
+    the freeze level of the position's CURRENT SL/TP. MQL5 article 2555 gives the
+    rule: a buy position can be modified when ``TP - Bid >= freeze`` and
+    ``Bid - SL >= freeze``, a sell when ``Ask - TP >= freeze`` and
+    ``SL - Ask >= freeze``; otherwise the server answers 10029 ``FROZEN``."""
+
+    def _section(self) -> str:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("## Trailing stop")
+        return text[start:]
+
+    def _code(self) -> str:
+        return self._section().split("```mql5\n", 1)[1].split("```", 1)[0]
+
+    def test_table_has_the_article_rules_for_both_sides(self) -> None:
+        text = self._section()
+        assert "| Buy | Bid | `TP - Bid >= freeze` and `Bid - SL >= freeze` |" in text
+        assert "| Sell | Ask | `Ask - TP >= freeze` and `SL - Ask >= freeze` |" in text
+
+    def test_code_freezes_on_the_right_side_of_each_price(self) -> None:
+        code = self._code()
+        assert (
+            "(tp > 0.0 && tp - bid < freeze) || (sl > 0.0 && bid - sl < freeze)" in code
+        )
+        assert (
+            "(tp > 0.0 && ask - tp < freeze) || (sl > 0.0 && sl - ask < freeze)" in code
+        )
+        assert "SYMBOL_TRADE_FREEZE_LEVEL" in code
+        assert "if(freeze <= 0.0) return(false);" in code
+
+    def test_trailstops_skips_a_frozen_position_before_modifying(self) -> None:
+        code = self._code()
+        guard = code.index(
+            "if(PositionIsFrozen(type, sl, PositionGetDouble(POSITION_TP))) continue;"
+        )
+        assert guard < code.index("trade.PositionModify(")
+
+    def test_prose_names_retcode_10029_and_the_pending_references(self) -> None:
+        text = _flat(self._section())
+        assert "retcode 10029 (FROZEN)" in text
+        assert "to the Ask (buy limit, buy stop) or Bid (sell limit, sell stop)" in text
+        assert "skip the update instead of retrying every tick" in text
+
+    def test_the_helper_matches_the_article_in_python(self) -> None:
+        """The two comparisons, evaluated: frozen exactly when a distance falls
+        below the freeze level (the article's table allows ``>=``)."""
+        freeze = 0.00020
+
+        def buy_frozen(bid: float, sl: float, tp: float) -> bool:
+            return bool(
+                (tp > 0 and tp - bid < freeze) or (sl > 0 and bid - sl < freeze)
+            )
+
+        assert buy_frozen(1.10000, 1.09990, 0.0)  # SL 10 points away: frozen
+        assert not buy_frozen(1.10000, 1.09970, 0.0)  # 30 points: free
+        assert buy_frozen(1.10000, 0.0, 1.10010)  # TP 10 points away: frozen
+        assert not buy_frozen(1.10000, 1.09970, 1.10030)

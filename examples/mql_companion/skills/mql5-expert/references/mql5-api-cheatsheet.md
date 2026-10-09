@@ -509,7 +509,36 @@ says only `type` is meaningful in the structure; the detail is in the handler's
 
 ## Trailing stop (the version that does not fight the broker)
 
+Two server limits apply to a modification. The stops level (above) limits the
+*new* SL; the **freeze level** limits the *current* one. `SYMBOL_TRADE_FREEZE_LEVEL`
+is the distance, in points, inside which a position or pending order cannot be
+modified because it may be about to execute. The MQL5 article that the stops
+table comes from (mql5.com/en/articles/2555) gives the check, with the same
+Bid/Ask references as the stops level:
+
+| Position | Activation price | Modification allowed when |
+|---|---|---|
+| Buy | Bid | `TP - Bid >= freeze` and `Bid - SL >= freeze` |
+| Sell | Ask | `Ask - TP >= freeze` and `SL - Ask >= freeze` |
+
+Pending orders use the distance from the order's open price to the Ask (buy
+limit, buy stop) or Bid (sell limit, sell stop). A refused modification comes
+back as retcode `10029` (`FROZEN`). A trailing stop trips this when the price
+nears the take-profit, so skip the update instead of retrying every tick.
+
 ```mql5
+bool PositionIsFrozen(const ENUM_POSITION_TYPE type, const double sl, const double tp)
+  {
+   const double freeze = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL) *
+                         SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(freeze <= 0.0) return(false);                       // 0 = no freeze level
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(type == POSITION_TYPE_BUY)
+      return((tp > 0.0 && tp - bid < freeze) || (sl > 0.0 && bid - sl < freeze));
+   return((tp > 0.0 && ask - tp < freeze) || (sl > 0.0 && sl - ask < freeze));
+  }
+
 void TrailStops(const double trail_points)
   {
    const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -527,6 +556,7 @@ void TrailStops(const double trail_points)
       double sl  = PositionGetDouble(POSITION_SL);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      if(PositionIsFrozen(type, sl, PositionGetDouble(POSITION_TP))) continue;
 
       if(type == POSITION_TYPE_BUY)
         {
