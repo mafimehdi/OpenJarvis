@@ -2313,3 +2313,37 @@ class TestOnInitReturnCodes:
     def test_position_select_snippet_uses_a_block(self) -> None:
         text = CHEATSHEET.read_text(encoding="utf-8")
         assert "if(PositionSelect(_Symbol))\n  {\n   double vol" in text
+
+
+class TestRawOrderSendChecksTheRetcode:
+    """The cheatsheet taught that a CTrade ``bool`` is not the server's verdict,
+    then showed the raw ``OrderSend`` example with ``if(!OrderSend(req, res))``
+    as the only test -- the same trap. The reference says to check the result's
+    ``retcode`` first, because ``true`` for a market order means only that the
+    order was placed for further execution."""
+
+    def _section(self) -> str:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        start = text.index("## Trading with a raw request")
+        return text[start : text.index("\n## Margin / profit math", start)]
+
+    def test_snippet_tests_the_retcode_as_well_as_the_bool(self) -> None:
+        block = self._section().split("```mql5\n", 1)[1].split("```", 1)[0]
+        assert "if(!OrderSend(req, res) || !RetcodeIsSuccess(res.retcode))" in block
+        assert "retcode=%u" in block  # the retcode is a uint
+
+    def test_the_old_bool_only_test_is_gone(self) -> None:
+        assert "if(!OrderSend(req, res))\n" not in self._section()
+
+    def test_prose_quotes_the_reference_and_names_ordercheck(self) -> None:
+        text = _flat(self._section())
+        assert "successfully placed in the trading system for further execution" in text
+        assert "check the result's retcode first" in text
+        assert "run OrderCheck() on the request before sending it" in text
+        assert "retcode_external" in text
+
+    def test_the_helper_it_calls_is_defined_earlier_in_the_page(self) -> None:
+        text = CHEATSHEET.read_text(encoding="utf-8")
+        assert text.index("bool RetcodeIsSuccess(") < text.index(
+            "## Trading with a raw request"
+        )

@@ -273,9 +273,17 @@ req.deviation= InpSlippagePoints;
 req.magic    = InpMagic;
 req.comment  = "openjarvis";
 req.type_filling = ORDER_FILLING_IOC;      // must match SYMBOL_FILLING_MODE
-if(!OrderSend(req, res))
-   PrintFormat("OrderSend failed: %d (%s)", res.retcode, res.comment);
+if(!OrderSend(req, res) || !RetcodeIsSuccess(res.retcode))   // RetcodeIsSuccess: above
+   PrintFormat("OrderSend not accepted: retcode=%u (%s)", res.retcode, res.comment);
 ```
+
+`OrderSend` has the same trap as `CTrade`: its `bool` is a check of the request
+structures, and for a market order `true` "means only that the order has been
+successfully placed in the trading system for further execution". The
+reference tells you to check the result's `retcode` first (and `retcode_external`
+if the external system matters), and to run `OrderCheck()` on the request before
+sending it. The fill itself can arrive after `OrderSend` returns
+(mql5.com/en/docs/trading/ordersend).
 
 ## Margin / profit math before sending
 
