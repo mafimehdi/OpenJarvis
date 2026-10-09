@@ -59,7 +59,7 @@ The `openjarvis-eval` console script is an alias for `python -m openjarvis.evals
 
 ## Datasets
 
-The framework ships with **40 registered benchmarks** covering academic reasoning, agentic tasks, coding, retrieval, conversation quality, and practical use-case benchmarks. Datasets are grouped by category below; `uv run python -m openjarvis.evals list` prints the authoritative registry.
+The framework ships with **41 registered benchmarks** covering academic reasoning, agentic tasks, coding, retrieval, conversation quality, and practical use-case benchmarks. Datasets are grouped by category below; `uv run python -m openjarvis.evals list` prints the authoritative registry.
 
 ### Use-Case Benchmarks
 
@@ -126,6 +126,7 @@ Both `liveresearch` and `deepresearch` are registered keys for the DeepResearchB
 | Dataset | Key | Category | Description |
 |---------|-----|----------|-------------|
 | **LiveCodeBench** | `livecodebench` | coding | Competitive programming |
+| **MQLBench** | `mql-bench` | coding | MQL5 Expert Advisor generation (structural checks) |
 
 ### Retrieval Benchmarks
 
@@ -150,6 +151,8 @@ Both `liveresearch` and `deepresearch` are registered keys for the DeepResearchB
 **FRAMES** tests multi-hop factual retrieval. Each question requires synthesizing information across multiple Wikipedia articles, making it a strong probe of retrieval-augmented generation capability.
 
 **WildChat** uses real user conversations filtered to English single-turn exchanges. The reference answer is the original assistant response from the dataset; the model under evaluation is compared against it by an LLM judge.
+
+**MQLBench** generates MetaTrader 5 Expert Advisor code — indicator handles, `CTrade` order flow, fixed-fractional lot sizing, and MQL4→MQL5 ports. No MQL compiler runs in CI, so scoring is deterministic and structural: each task declares the API surface a correct answer must touch (`required`, 70%), bonus practices (`optional`, 10%), and the MQL4-only idioms that must not appear in MQL5 code (`forbid_mql4`, 20%). That last check carries the most signal — the typical failure mode of a small local model is not a syntax slip but confidently emitting MQL4 (`Ask`/`Bid`, an eleven-argument `OrderSend`, `AccountBalance`, `Close[1]`), which either fails to compile or, worse, compiles and trades wrongly. See the [MQL Companion tutorial](../tutorials/mql-companion.md) for the compile-in-the-loop workflow that closes the gap this benchmark measures.
 
 !!! tip "GAIA dataset access"
     The GAIA dataset requires a HuggingFace account and acceptance of the dataset's terms of use. The loader downloads the full dataset snapshot on first use and caches it at `~/.cache/gaia_benchmark/`. Subsequent runs use the local cache.
@@ -209,7 +212,7 @@ The `hermes` and `openclaw` backends shell out to external agent frameworks and 
 uv run python -m openjarvis.evals list
 ```
 
-Abridged output (40 benchmarks, 4 backends):
+Abridged output (41 benchmarks, 4 backends):
 
 ```
                          Available Benchmarks

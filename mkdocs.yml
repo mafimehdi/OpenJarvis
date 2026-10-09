@@ -165,6 +165,7 @@ nav:
       - Scheduled Personal Ops: tutorials/scheduled-ops.md
       - Messaging Hub: tutorials/messaging-hub.md
       - Code Companion: tutorials/code-companion.md
+      - MQL Companion: tutorials/mql-companion.md
   - Architecture:
       - Overview: architecture/overview.md
       - Intelligence: architecture/intelligence.md

@@ -1,0 +1,142 @@
+# MQL Assistant — MetaTrader Expert Advisor development on your own machine
+# Copy to ~/.openjarvis/config.toml with:
+#
+#   jarvis init --preset mql-assistant --force
+#
+# Pairs with examples/mql_companion/ (compile-in-the-loop fixer + the
+# mql5-expert skill) and docs/tutorials/mql-companion.md.
+#
+# Why these settings:
+#   * MQL5 is a low-resource language for LLMs. Use the largest model your
+#     hardware runs — model_code below is what `-m code` resolves to.
+#   * The compiler is the ground truth, so shell_exec is enabled: the agent
+#     drives metaeditor64.exe /compile and reads the log.
+#   * knowledge_search is enabled so the agent can verify signatures against an
+#     indexed copy of the MQL5 reference instead of guessing them.
+#   * mt5_tester_report is enabled because a backtest is the only honest answer
+#     to "is this EA any good": the agent reads the tester's own numbers
+#     (profit factor, drawdown, history quality) instead of reasoning about a
+#     chart it cannot see.
+#
+# Safety: shell_exec has no allowlist and runs as your user. Keep this config on
+# a machine (or VPS) that holds no live trading credentials, and test every EA
+# on a demo account before it touches real money.
+#
+# Usage:
+#   jarvis memory index ./mql5-reference/          # index once (needs openjarvis_rust)
+#   jarvis ask "Review MyEA.mq5 for MQL4-isms and missing stop logic"
+#   jarvis ask --agent native_react "Add an ATR-based trailing stop to MyEA.mq5"
+#   python examples/mql_companion/compile_loop.py --source MyEA.mq5
+#   python examples/mql_companion/tester_report.py --latest --prompt
+#   jarvis ask "Read the newest tester report and tell me if this EA is tradeable"
+
+[engine]
+default = "ollama"
+
+[intelligence]
+default_model = "qwen3.5:35b"
+# Smaller/faster fallbacks for one-line questions and chat:
+model_code = "qwen3.5:35b"     # resolved by `-m code`
+model_chat = "qwen3.5:9b"
+# Low temperature: MQL5 signatures must be reproduced exactly, not creatively.
+temperature = 0.2
+max_tokens = 4096              # whole EA files, not snippets
+
+[agent]
+default_agent = "orchestrator"
+max_turns = 14                 # compile-fix loops need room to iterate
+context_from_memory = true     # inject indexed MQL5 reference chunks
+
+[tools]
+enabled = [
+    "file_read",
+    "file_write",
+    "apply_patch",
+    "shell_exec",               # metaeditor64.exe /compile:<file> /log
+    "knowledge_search",         # verify signatures against the indexed docs
+    "git_diff",
+    "git_status",
+    "think",
+    "calculator",
+    "web_search",               # needs `uv sync --extra tools-search` + TAVILY_API_KEY
+    # Live terminal data from examples/mql_companion/mt5_mcp_server.py.
+    # A non-empty `enabled` list also filters MCP tools by name, so the bridge
+    # is invisible to the agent unless its tools are listed here. Names that
+    # are not registered (bridge not configured) are skipped silently.
+    "mt5_status",
+    "mt5_account",
+    "mt5_symbols",
+    "mt5_symbol_info",
+    "mt5_tick",
+    "mt5_rates",
+    "mt5_positions",
+    "mt5_orders",
+    "mt5_calc",
+    # Backtest results from the Strategy Tester (files, not the live terminal).
+    "mt5_tester_report",
+    "mt5_tester_compare",
+    # Optimization passes: ranked, filtered, and checked for the overfitting
+    # a sorted table hides. Also returns the .set that reproduces one pass.
+    "mt5_tester_optimization",
+    # Forward checks: the back half against the half the search never saw, with
+    # a holds_up / degrades / inconclusive verdict instead of a sorted table.
+    "mt5_tester_forward_check",
+    # "mt5_order_send",         # only exists with --allow-trading; demo only
+    # "mt5_tester_run",         # only exists with --allow-tester; it launches
+    #                           # the terminal and closes it when done
+]
+
+# Note: file_read/file_write accept an `allowed_dirs` argument, but no config
+# key populates it — an empty allowlist means every path is reachable. If you
+# want a filesystem jail, run the agent inside the container sandbox instead
+# (`jarvis ask --agent sandboxed ...`) or use docker_shell_exec.
+
+# Live market data: examples/mql_companion/mt5_mcp_server.py exposes a running
+# terminal as MCP tools (mt5_symbol_info, mt5_tick, mt5_rates, mt5_calc, ...),
+# so the agent reads a symbol's digits, stops level, tick value and filling
+# modes instead of assuming them. Read-only by default.
+#
+# Same machine as the terminal (Windows):
+# [tools.mcp]
+# enabled = true
+# servers = '[{"name": "mt5", "command": "python", "args": ["examples/mql_companion/mt5_mcp_server.py", "--tester-dir", "C:/Users/you/AppData/Roaming/MetaQuotes/Terminal/<hash>/Tester"]}]'
+#
+# --tester-dir tells mt5_tester_report, mt5_tester_optimization and
+# mt5_tester_forward_check where reports land; without it the bridge searches the
+# terminal's data folders and the working directory. Add
+# "--allow-tester" to also register mt5_tester_run, which launches the terminal
+# to run a backtest — only on a machine dedicated to testing.
+#
+# Terminal on a Windows box, OpenJarvis on a Linux VPS: start the bridge there
+# with `--http --host 0.0.0.0 --port 8765 --token SECRET` and point at it:
+# [tools.mcp]
+# enabled = true
+# servers = '[{"name": "mt5", "url": "http://windows-host:8765/", "token": "SECRET"}]'
+#
+# Developing with no terminal at all: add "--stub" for a deterministic
+# synthetic market. Trading needs "--allow-trading" AND a demo account; the
+# bridge refuses to send orders to a live account whatever flags it gets.
+
+[tools.storage]
+default_backend = "sqlite"
+chunk_size = 512               # MQL5 reference pages are short; keep chunks tight
+chunk_overlap = 96             # signatures often straddle a page break
+context_top_k = 8              # API lookups need more candidates than prose QA
+
+[skills]
+enabled = true
+auto_discover = true
+# After `python examples/mql_companion/install_skill.py`:
+#   jarvis skill list                       -> mql5-expert
+#   jarvis skill run mql5-expert -a file_path=MyEA.mq5
+
+[traces]
+enabled = true                 # required by `jarvis optimize skills`
+
+[learning]
+enabled = false                # flip on once you have ~20 traces per skill
+
+[learning.skills]
+auto_optimize = false
+optimizer = "dspy"             # or "gepa"; ACE playbook evolution also works
+min_traces_per_skill = 20
